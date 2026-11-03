@@ -9,8 +9,7 @@
 		{
 			"binding": "DB",
 			"database_name": "plane-service-tracker",
-			// Replace with the id printed by `wrangler d1 create plane-service-tracker`
-			"database_id": "00000000-0000-0000-0000-000000000000",
+			"database_id": "1cb5768d-98ac-4ad3-a147-4705692ba8f6",
 			"migrations_dir": "migrations"
 		}
 	]
