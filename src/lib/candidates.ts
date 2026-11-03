@@ -83,7 +83,12 @@ export function normalizeCandidates(raw: Partial<Record<Field, string>>[]): {
 	return { rows, dropped, duplicates };
 }
 
-/** CSV: header row mapped by alias. */
+/** Spreadsheet cells (numbers, dates, null) to trimmed strings. */
+export function cellsToStrings(rows: unknown[][]): string[][] {
+	return rows.map((r) => r.map((c) => (c == null ? '' : c instanceof Date ? c.toISOString().slice(0, 10) : String(c).trim())));
+}
+
+/** CSV / spreadsheet rows: header row mapped by alias. */
 export function candidatesFromCsvRows(rows: string[][]): Partial<Record<Field, string>>[] {
 	let map: Partial<Record<Field, number>> | null = null;
 	const out: Partial<Record<Field, string>>[] = [];

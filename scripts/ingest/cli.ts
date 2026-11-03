@@ -4,13 +4,15 @@
  *   npm run ingest -- fetch [--days 90] [--end YYYY-MM-DD] [--local]
  *   npm run ingest -- score [--local] [--dry-run]
  *   npm run ingest -- run   [--days 90] [--local]          (fetch + score)
+ *   npm run ingest -- import-candidates <file.xlsx|csv> [--local]   (replace the candidate list)
  *
  * Candidate hexes are read from D1 (uploaded in the app). `--candidates file.csv` overrides that.
  * Default target is the remote (deployed) D1; `--local` uses wrangler's local dev database.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { candidatesFromCsvRows, normalizeCandidates } from '../../src/lib/candidates.ts';
+import { readSheet } from 'read-excel-file/node';
+import { candidatesFromCsvRows, cellsToStrings, normalizeCandidates } from '../../src/lib/candidates.ts';
 import { parseCsv } from '../../src/lib/csv.ts';
 import { Airports } from './airports.ts';
 import { scoreAircraft, type Pt } from './analyze.ts';
@@ -33,11 +35,15 @@ const { values: opt, positionals } = parseArgs({
 const target: Target = opt.local ? '--local' : '--remote';
 const cmd = positionals[0] ?? 'run';
 
-function loadHexes(): Set<string> {
-	if (opt.candidates) {
-		const { rows } = normalizeCandidates(candidatesFromCsvRows(parseCsv(readFileSync(opt.candidates, 'utf8'))));
-		return new Set(rows.map((r) => r.hex));
-	}
+async function readCandidateFile(file: string) {
+	const rows = file.toLowerCase().endsWith('.xlsx')
+		? cellsToStrings(await readSheet(file))
+		: parseCsv(readFileSync(file, 'utf8'));
+	return normalizeCandidates(candidatesFromCsvRows(rows));
+}
+
+async function loadHexes(): Promise<Set<string>> {
+	if (opt.candidates) return new Set((await readCandidateFile(opt.candidates)).rows.map((r) => r.hex));
 	return new Set(query<{ hex: string }>('SELECT hex FROM candidates', target).map((r) => r.hex));
 }
 
@@ -163,13 +169,38 @@ async function cmdScore(hexes: Set<string>) {
 	log(`pushed to D1 (${target.slice(2)})`);
 }
 
-const hexes = loadHexes();
+async function cmdImportCandidates(file: string | undefined) {
+	if (!file) throw new Error('usage: import-candidates <file.xlsx|csv>');
+	const { rows, dropped, duplicates } = await readCandidateFile(file);
+	if (!rows.length) throw new Error('no rows with a valid hex (check the header row)');
+	const now = new Date().toISOString();
+	const sql = [
+		'DELETE FROM candidates;',
+		...inserts(
+			'candidates',
+			['hex', 'registration', 'model', 'registered_owner', 'owner_city', 'owner_state', 'uploaded_at'],
+			rows.map((r) => [r.hex, r.registration, r.model, r.registered_owner, r.owner_city, r.owner_state, now])
+		)
+	].join('\n');
+	mkdirSync('ingest-out', { recursive: true });
+	writeFileSync('ingest-out/candidates.sql', sql + '\n');
+	log(`import-candidates: ${rows.length} candidates (${dropped} without hex dropped, ${duplicates} duplicates)`);
+	if (opt['dry-run']) return;
+	executeFile('ingest-out/candidates.sql', target);
+	log(`candidates written to D1 (${target.slice(2)})`);
+}
+
+if (cmd === 'import-candidates') {
+	await cmdImportCandidates(positionals[1]);
+	process.exit(0);
+}
+const hexes = await loadHexes();
 if (cmd === 'fetch') await cmdFetch(hexes);
 else if (cmd === 'score') await cmdScore(hexes);
 else if (cmd === 'run') {
 	await cmdFetch(hexes);
 	await cmdScore(hexes);
 } else {
-	console.error(`unknown command ${cmd}; use fetch | score | run`);
+	console.error(`unknown command ${cmd}; use fetch | score | run | import-candidates`);
 	process.exit(1);
 }

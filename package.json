@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "pdfjs-dist": "5.7.284",
+    "read-excel-file": "9.3.12",
     "tz-lookup": "6.1.25"
   }
 }

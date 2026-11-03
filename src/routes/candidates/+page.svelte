@@ -1,6 +1,13 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { candidatesFromCsvRows, candidatesFromWords, FIELDS, normalizeCandidates, type Candidate } from '$lib/candidates';
+	import {
+		candidatesFromCsvRows,
+		candidatesFromWords,
+		cellsToStrings,
+		FIELDS,
+		normalizeCandidates,
+		type Candidate
+	} from '$lib/candidates';
 	import { parseCsv } from '$lib/csv';
 
 	let { data, form } = $props();
@@ -19,7 +26,11 @@
 		busy = true;
 		try {
 			let raw;
-			if (file.name.toLowerCase().endsWith('.pdf')) {
+			const name = file.name.toLowerCase();
+			if (name.endsWith('.xlsx')) {
+				const { readSheet } = await import('read-excel-file/browser');
+				raw = candidatesFromCsvRows(cellsToStrings(await readSheet(file)));
+			} else if (name.endsWith('.pdf')) {
 				const { pdfWords } = await import('$lib/pdf');
 				const pages = await pdfWords(file);
 				raw = candidatesFromWords(pages);
@@ -51,11 +62,11 @@
 <div class="card">
 	<h2 style="margin-top:0">Replace the list</h2>
 	<p class="muted">
-		Upload <code>BSJC_FAA_ULR_LargeCabin_Candidate_List.pdf</code> or a CSV. Expected columns: Registration, Mode S hex,
+		Upload the BSJC candidate list as XLSX, PDF or CSV (first sheet of a workbook). Expected columns: Registration, Mode S hex,
 		FAA model, Registered owner, Owner city, Owner state. Hex codes are lowercased and padded to 6 characters; rows
-		without a hex are dropped. The PDF is parsed in your browser.
+		without a hex are dropped. The file is parsed in your browser.
 	</p>
-	<input type="file" accept=".pdf,.csv,text/csv,application/pdf" onchange={onFile} disabled={busy} />
+	<input type="file" accept=".xlsx,.pdf,.csv,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onchange={onFile} disabled={busy} />
 	{#if busy}<p>Parsing…</p>{/if}
 	{#if parseError}<p class="error">{parseError}</p>{/if}
 	{#if info}<p>{info}</p>{/if}
