@@ -85,6 +85,18 @@ describe('stays and overnights', () => {
 		expect([...nights.keys()]).toEqual(['2026-10-02']); // 36 h cap ends before 03:00 on Oct 4
 	});
 
+	it('valley approach snaps to the paved airport, not a nearby grass strip', () => {
+		// track into Sun Valley lost ~5 NM south of KSUN; Sluder Airstrip (ID16, gravel) is closer
+		const pts: Pt[] = [
+			air(T('2026-10-03T20:00:00Z'), 43.2, -114.2, 14000),
+			air(T('2026-10-03T20:10:00Z'), 43.42, -114.28, 8500),
+			air(T('2026-10-05T16:00:00Z'), 43.42, -114.28, 8600),
+			air(T('2026-10-05T16:05:00Z'), 43.2, -114.1, 15000)
+		];
+		const { landings } = scoreAircraft('a00005', pts, ap, wStart, wEnd);
+		expect(landings[0].airport.ident).toBe('KSUN');
+	});
+
 	it('mid-cruise gaps are not landings', () => {
 		const pts: Pt[] = [
 			air(T('2026-10-02T17:00:00Z'), ...SLC, 39000),

@@ -5,7 +5,8 @@
  *  - Coverage gap > 20 min after an airborne point that is low and close to an airport
  *    (<= 8 NM and < 3000 ft above field, or <= 20 NM and < 6000 ft) -> inferred landing there.
  *    Symmetric rule for the first airborne point after a gap -> inferred departure. Candidates are
- *    ranked by distance plus a penalty for medium (1.5 NM) and small (4 NM) airports.
+ *    ranked by distance plus a penalty for medium (1.5 NM) and small (4 NM) airports, and must
+ *    have a paved runway >= 5000 ft (valley approaches otherwise snap to private grass strips).
  *  - A stay at X runs from arrival until the first later airborne observation. If that point is
  *    > 150 NM from X (departure not seen) the stay is capped at 36 h after the last evidence at X.
  *  - Before an aircraft's first evidence / after its last, a parked stay extends at most 14 days.
@@ -50,12 +51,15 @@ function snapGround(ap: Airports, lat: number, lon: number): Airport | null {
 
 /** Rank penalty (NM) so an approach near a big field is not snapped to an adjacent small strip. */
 const RANK_PENALTY_NM = [0, 1.5, 4];
+/** Inferred landings/departures only at fields a large-cabin jet uses: paved runway >= 5000 ft. */
+export const INFERRED_MIN_PAVED_FT = 5000;
 
 function snapLowAirborne(ap: Airports, lat: number, lon: number, alt: Pt[3]): Airport | null {
 	if (typeof alt !== 'number') return null;
 	let best: Airport | null = null;
 	let bestScore = Infinity;
 	for (const [d, a] of ap.near(lat, lon, 20)) {
+		if (a.pavedFt < INFERRED_MIN_PAVED_FT) continue;
 		const agl = alt - a.elev;
 		if (!((d <= 8 && agl < 3000) || (d <= 20 && agl < 6000))) continue;
 		const score = d + RANK_PENALTY_NM[a.rank];

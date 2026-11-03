@@ -97,27 +97,35 @@ async function cmdScore(hexes: Set<string>) {
 	const wEnd = Date.parse(`${addDays(use.at(-1)!, 1)}T00:00:00Z`) / 1000;
 
 	const ap = await Airports.load(opt.data);
-	const pts = new Map<string, Pt[]>();
-	const meta = new Map<string, { r?: string; t?: string }>();
+	// index only (hex -> days); traces are loaded one aircraft at a time to bound memory
+	const daysByHex = new Map<string, string[]>();
 	for (const day of use)
 		for (const f of readdirSync(`${opt.traces}/${day}`)) {
 			if (!f.endsWith('.json')) continue;
 			const hex = f.slice(0, -5);
 			if (!hexes.has(hex)) continue;
-			const d = JSON.parse(readFileSync(`${opt.traces}/${day}/${f}`, 'utf8'));
-			if (!pts.has(hex)) pts.set(hex, []);
-			pts.get(hex)!.push(...(d.pts as Pt[]));
-			meta.set(hex, { r: d.r, t: d.t });
+			if (!daysByHex.has(hex)) daysByHex.set(hex, []);
+			daysByHex.get(hex)!.push(day);
 		}
+	function loadAircraft(hex: string) {
+		const p: Pt[] = [];
+		let m: { r?: string; t?: string } = {};
+		for (const day of daysByHex.get(hex)!) {
+			const d = JSON.parse(readFileSync(`${opt.traces}/${day}/${hex}.json`, 'utf8'));
+			for (const x of d.pts as Pt[]) p.push(x);
+			m = { r: d.r, t: d.t };
+		}
+		return { p, m };
+	}
 
 	const scoreRows: unknown[][] = [];
 	const nightRows: unknown[][] = [];
 	const landRows: unknown[][] = [];
 	const usedAirports = new Set<string>();
 	const fetched = new Set(use);
-	for (const [hex, p] of pts) {
+	for (const hex of daysByHex.keys()) {
+		const { p, m } = loadAircraft(hex);
 		const { score: s, nights, landings } = scoreAircraft(hex, p, ap, wStart, wEnd, fetched);
-		const m = meta.get(hex) ?? {};
 		scoreRows.push([
 			hex, s.first_seen, s.last_seen, m.r ?? null, m.t ?? null, s.top_airport, s.top_airport_share,
 			s.nights_observed, s.nights_in_region, s.region_share, s.landings_in_region, s.landings_total,
@@ -155,13 +163,13 @@ async function cmdScore(hexes: Set<string>) {
 		...inserts(
 			'ingest_runs',
 			['window_start', 'window_end', 'days', 'candidates', 'aircraft_seen', 'finished_at'],
-			[[use[0], use.at(-1), use.length, hexes.size, pts.size, new Date().toISOString()]]
+			[[use[0], use.at(-1), use.length, hexes.size, daysByHex.size, new Date().toISOString()]]
 		)
 	].join('\n');
 	mkdirSync('ingest-out', { recursive: true });
 	writeFileSync('ingest-out/push.sql', sql + '\n');
 	log(
-		`score: window ${use[0]} .. ${use.at(-1)} (${use.length} days), ${pts.size}/${hexes.size} aircraft seen, ` +
+		`score: window ${use[0]} .. ${use.at(-1)} (${use.length} days), ${daysByHex.size}/${hexes.size} aircraft seen, ` +
 			`${nightRows.length} overnights, ${landRows.length} landings -> ingest-out/push.sql`
 	);
 	if (opt['dry-run']) return;
