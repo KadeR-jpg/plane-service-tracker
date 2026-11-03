@@ -2,3 +2,6 @@ traces/
 *.partial/
 __pycache__/
 fetch_stdout.txt
+data/
+progress.log
+candidates_interim.csv
