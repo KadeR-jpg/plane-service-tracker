@@ -1,56 +1,94 @@
-# ULR large-cabin aircraft: regional home-base finder
+# Regional Base Finder
 
-This tool finds which large-cabin / ULR aircraft are probably **based** in MT, ID, WY, eastern WA (east of -120.5°) and northern UT (north of 39.5°). It works from ADS-B overnight locations, not FAA registered addresses.
+This SvelteKit app runs on Cloudflare Workers with D1. It finds which ULR / large-cabin aircraft are probably **based** in this service region:
 
-## Pipeline
+- Montana
+- Idaho
+- Wyoming
+- Eastern Washington (east of -120.5°)
+- Northern Utah (north of 39.5°)
 
+It uses ADS-B overnight locations from the adsb.lol history archives, not FAA registered addresses.
+
+The work is split in two parts:
+
+| Part | Where it runs | What it does |
+|---|---|---|
+| Web app (`src/`) | Cloudflare Worker | Summary, all-aircraft table, per-aircraft overnight calendar, candidate list upload, CSV/Markdown exports |
+| Ingest CLI (`scripts/ingest/`) | Your machine (Node 22+) | Streams daily ADS-B history, filters it to the candidate hex codes, reconstructs overnights, and pushes the results to D1 with wrangler |
+
+The ingest runs locally because each day of history is a 3–4 GB tar. Processing that on Workers would need the paid plan's long CPU limits.
+
+## Setup
+
+```sh
+npm install
+npx wrangler login
+npx wrangler d1 create plane-service-tracker      # paste the database_id into wrangler.jsonc
+npm run db:migrate:remote
+npx wrangler secret put ADMIN_TOKEN               # required to replace the candidate list
+npm run deploy
 ```
-pip install -r requirements.txt
 
-# 1. Candidate list (PDF -> candidates.csv; hex lowercased, rows without hex dropped)
-python3 extract_candidates.py BSJC_FAA_ULR_LargeCabin_Candidate_List.pdf -o candidates.csv
+Local development:
 
-# 2. Airport reference data (OurAirports)
-mkdir -p data
-curl -sSfL -o data/airports.csv https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv
-curl -sSfL -o data/runways.csv  https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/runways.csv
-
-# 3. History: last 90 days of adsb.lol globe_history, filtered to the candidate hexes
-python3 fetch_history.py --candidates candidates.csv --days 90
-
-# 4. Score
-python3 analyze.py --candidates candidates.csv
+```sh
+echo 'ADMIN_TOKEN=dev-token' > .dev.vars
+npm run db:migrate:local
+npm run build && npx wrangler dev                 # http://localhost:8787
 ```
 
-Outputs:
+## Workflow
 
-- `regional_base_candidates.csv`: one row per candidate, sorted by `region_share`, then `nights_observed`. Columns follow the spec, plus `landings_total`, `top_region_airport` and `region_airports` (`ICAO:<nights>n/<landings>l` for each in-region airport).
-- `overnights.csv`: one row per aircraft-night with the 03:00-local airport, for auditing.
-- `summary.md`: in-region activity count, the likely-based list (`region_share >= 0.5` and `nights_observed >= 10`), frequent visitors, and counts by airport.
-- `progress.log`: one line per fetched day.
+1. **Upload candidates.** On `/candidates`, choose `BSJC_FAA_ULR_LargeCabin_Candidate_List.pdf` or a CSV.
+   - The PDF is parsed in the browser with pdf.js. Columns are found by their header labels: Registration, Mode S hex, FAA model, Registered owner, Owner city, Owner state.
+   - Hex codes are lowercased and padded to 6 characters. Rows without a hex are dropped, and duplicates are removed.
+   - Check the preview, then save with the admin token.
+2. **Ingest.** Run this from the repo on your machine:
+   ```sh
+   npm run ingest -- run --days 90            # remote D1 (add --local for wrangler dev)
+   ```
+   - `fetch` reads the candidate hex codes from D1. It streams each day's archive parts straight into a tar reader, so **no raw archive is written to disk**. It keeps only matching traces, stored compactly under `traces/YYYY-MM-DD/<hex>.json`.
+   - One day takes about 15–60 s, depending on bandwidth.
+   - Finished days are skipped on restart. A day is downloaded again only if the candidate list has gained hex codes since that day was fetched.
+   - Progress is written to `progress.log`.
+   - `score` rebuilds the stays and overnights from the cached traces. It writes `ingest-out/push.sql` and runs it against D1. Use `--dry-run` to write the file without running it.
+   - Behind an HTTPS proxy, set `NODE_USE_ENV_PROXY=1`.
+3. **Read results** on `/`. The thresholds can be adjusted there. Exports:
+   - `/export/regional_base_candidates.csv`
+   - `/export/overnights.csv`
+   - `/export/summary.md`
 
-## Fetching
+## Method
 
-- Release tags (`v<YYYY.MM.DD>-planes-readsb-prod-0`) are read with `git ls-remote`, so the GitHub API is not needed. Assets are `<tag>.tar.aa`, `.tar.ab`, … and concatenate into one tar.
-- Traces are stored in the tar as `./traces/<last2hex>/trace_full_<hex>.json`, gzip-compressed readsb trace JSON.
-- The parts are streamed from `curl` straight into Python `tarfile`. **No raw archive is written to disk.** One day is about 3–4 GB and takes 30–80 s.
-- The output per day is `traces/YYYY-MM-DD/<hex>.json`, a compact form: `[epoch, lat, lon, alt|"ground", gs]`. Airborne points are thinned to 20 s and ground points to 60 s. Transitions and points next to gaps are always kept.
-- A day counts as done when `traces/YYYY-MM-DD/.done` exists. On restart, finished days are skipped and a half-written `.partial` directory is redone.
-- `--types GLF5,GLF6,...` replaces `--candidates` with a filter on the adsb.lol type code for US (`a*`) hex codes. Use it when the PDF is not available. Then run `analyze.py --derive-candidates --candidates candidates_interim.csv`.
-
-## Scoring logic
-
-- Airports: OurAirports large and medium airports, plus small airports with an open runway of at least 4000 ft.
-- Ground point: `alt == "ground"` or ground speed < 40 kt. It is snapped to the nearest airport within 3 NM.
-- Inferred landing or departure: a coverage gap of more than 20 minutes, where the track ends or starts low near an airport (≤ 8 NM and < 3000 ft above the field, or ≤ 20 NM and < 6000 ft).
-- Stay at airport X: runs from arrival to the first later airborne point.
-  - If that point is more than 150 NM away (departure not seen), the stay is capped at 36 h after the last evidence at X.
+- **History source:** GitHub releases `adsblol/globe_history_<year>`, tag `v<YYYY.MM.DD>-planes-readsb-prod-0`. The assets `<tag>.tar.aa`, `.ab`, … concatenate into one tar, and traces are stored as `./traces/<xx>/trace_full_<hex>.json` (gzip). Tags are listed with `git ls-remote`, so no GitHub API is needed.
+- **Airports:** OurAirports large and medium airports, plus small airports with an open runway of at least 4000 ft. The files are downloaded to `data/` on first run.
+- **Ground point:** `alt == "ground"` or ground speed < 40 kt. It is snapped to the nearest airport within 3 NM.
+- **Inferred landing or departure:** used for coverage gaps of more than 20 minutes, when the track ends or starts low near an airport (≤ 8 NM and < 3000 ft above field, or ≤ 20 NM and < 6000 ft). Medium airports get a 1.5 NM distance penalty and small airports 4 NM, so an approach to a big airport is not snapped to a strip next to it.
+- **Stay:** runs from arrival until the next airborne point.
+  - If that point is more than 150 NM away (departure not seen), the stay is capped at 36 h after the last evidence.
   - Before an aircraft's first evidence and after its last, a parked stay extends by at most 14 days.
-- Overnight for night D: the stay that covers 03:00 local on D+1, using the airport's time zone (`timezonefinder`).
-- `landings_in_region`: stays opened at in-region airports, counting both observed and inferred landings.
+- **Overnight for night D:** the airport where a stay covers 03:00 local (the airport's time zone) on D+1. Nights that fall on archive days that were not fetched are never counted.
+- **Scores:**
+  - `nights_observed`
+  - `nights_in_region`
+  - `region_share`
+  - `top_airport` with its share
+  - `landings_in_region` (observed and inferred landings at in-region airports)
+- **Region rule:** `US-MT`, `US-ID` or `US-WY`; `US-WA` with lon > -120.5; `US-UT` with lat > 39.5. The lat > 39.5 rule includes Provo (KPVU).
+- **Likely based:** `region_share ≥ 0.5` and `nights_observed ≥ 10`.
+- **Frequent visitors:** at least 3 in-region landings, but not classed as based.
 
 ## Caveats
 
-- PIA/LADD aircraft use rotating hex codes and are not matched.
-- Receiver coverage in rural MT, WY and ID is patchy. Some small-field legs are still missed.
-- Visitors to Sun Valley, Jackson Hole or Bozeman show high `landings_in_region` with a low `region_share`. `summary.md` lists them separately from based aircraft.
+- PIA/LADD aircraft use rotating hex codes and do not match their FAA hex.
+- Receiver coverage in rural MT, WY and ID is patchy, so some small-field legs are missed.
+- Aircraft that visit Sun Valley, Jackson Hole or Bozeman often show high landings with a low overnight share. They are listed separately from based aircraft.
+
+## Development
+
+```sh
+npm test          # vitest: stay/overnight logic, time zones, candidate parsing
+npm run check     # svelte-check
+npx tsc -p scripts/tsconfig.json
+```
