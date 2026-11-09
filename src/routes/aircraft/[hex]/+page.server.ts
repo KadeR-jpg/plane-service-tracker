@@ -91,19 +91,19 @@ const FIELDS = ['contact_name', 'contact_role', 'contact_phone', 'contact_email'
 
 export const actions: Actions = {
 	prospect: async ({ request, platform, params, locals }) => {
-		if (!locals.admin) return fail(403, { error: 'Sign in to edit.' });
+		if (!locals.user) return fail(403, { error: 'Sign in to edit.' });
 		const f = await request.formData();
 		const status = String(f.get('status') ?? 'new');
 		if (!STATUSES.some((s) => s.value === status)) return fail(400, { error: 'Unknown status.' });
 		const v = Object.fromEntries(FIELDS.map((k) => [k, String(f.get(k) ?? '').slice(0, k === 'notes' ? 10000 : 300)]));
 		await db(platform)
 			.prepare(
-				`INSERT INTO prospects (hex, status, contact_name, contact_role, contact_phone, contact_email, notes, updated_at)
-				 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+				`INSERT INTO prospects (hex, status, contact_name, contact_role, contact_phone, contact_email, notes, updated_at, updated_by)
+				 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
 				 ON CONFLICT (hex) DO UPDATE SET status = ?2, contact_name = ?3, contact_role = ?4, contact_phone = ?5,
-				   contact_email = ?6, notes = ?7, updated_at = ?8`
+				   contact_email = ?6, notes = ?7, updated_at = ?8, updated_by = ?9`
 			)
-			.bind(params.hex.toLowerCase(), status, v.contact_name, v.contact_role, v.contact_phone, v.contact_email, v.notes, new Date().toISOString())
+			.bind(params.hex.toLowerCase(), status, v.contact_name, v.contact_role, v.contact_phone, v.contact_email, v.notes, new Date().toISOString(), locals.user.name || locals.user.email)
 			.run();
 		return { saved: true };
 	}

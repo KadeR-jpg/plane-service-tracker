@@ -1,6 +1,5 @@
 import { fail } from '@sveltejs/kit';
 import { normalizeCandidates, type Field } from '$lib/candidates';
-import { tokenMatches } from '$lib/server/auth';
 import { db } from '$lib/server/db';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -19,11 +18,8 @@ const CHUNK = 400;
 
 export const actions: Actions = {
 	save: async ({ request, platform, locals }) => {
+		if (!locals.user) return fail(403, { error: 'Sign in first.' });
 		const form = await request.formData();
-		const expected = platform?.env?.ADMIN_TOKEN;
-		if (!expected) return fail(500, { error: 'ADMIN_TOKEN secret is not configured on the Worker.' });
-		if (!locals.admin && !(await tokenMatches(String(form.get('token') ?? ''), expected)))
-			return fail(403, { error: 'Wrong admin token.' });
 
 		let raw: Partial<Record<Field, string>>[];
 		try {

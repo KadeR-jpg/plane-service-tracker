@@ -1,12 +1,11 @@
 declare global {
 	namespace App {
 		interface Locals {
-			admin: boolean;
+			user: import('$lib/server/auth').User | null;
 		}
 		interface Platform {
 			env: {
 				DB: D1Database;
-				ADMIN_TOKEN?: string;
 			};
 			ctx: ExecutionContext;
 			caches: CacheStorage & { default: Cache };

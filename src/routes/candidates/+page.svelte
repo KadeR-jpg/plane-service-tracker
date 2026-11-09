@@ -99,9 +99,6 @@
 			}}
 		>
 			<input type="hidden" name="rows" value={JSON.stringify(parsed)} />
-			{#if !data.admin}
-				<label>Admin token <input type="password" name="token" required autocomplete="current-password" /></label>
-			{/if}
 			<button class="primary" disabled={saving}>Replace list with {parsed.length} aircraft</button>
 		</form>
 	{/if}

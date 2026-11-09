@@ -1,7 +1,16 @@
-import type { Handle } from '@sveltejs/kit';
-import { COOKIE, isAdmin } from '$lib/server/auth';
+import { redirect, type Handle } from '@sveltejs/kit';
+import { COOKIE, sessionUser, userCount } from '$lib/server/auth';
 
+const PUBLIC = ['/login', '/setup'];
+
+/** Every page requires a signed-in user; with no accounts yet, everything goes to /setup. */
 export const handle: Handle = async ({ event, resolve }) => {
-	event.locals.admin = await isAdmin(event.cookies.get(COOKIE), event.platform?.env?.ADMIN_TOKEN);
+	const db = event.platform?.env?.DB;
+	event.locals.user = db ? await sessionUser(db, event.cookies.get(COOKIE)) : null;
+	const path = event.url.pathname;
+	if (!event.locals.user && db && !PUBLIC.includes(path)) {
+		if ((await userCount(db)) === 0) redirect(303, '/setup');
+		redirect(303, `/login?next=${encodeURIComponent(path + event.url.search)}`);
+	}
 	return resolve(event);
 };

@@ -13,13 +13,15 @@
 <header>
 	<div class="inner">
 		<a class="brand" href="/">Regional Base Finder</a>
+		{#if data.user}
 		<nav>
 			{#each links as l}
 				<a href={l.href} class:active={l.href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(l.href)}>{l.label}</a>
 			{/each}
 		</nav>
+		{/if}
 		<span class="auth">
-			{#if data.admin}<a href="/logout">Sign out</a>{:else}<a href="/login?next={encodeURIComponent(page.url.pathname)}">Sign in</a>{/if}
+			{#if data.user}<a href="/account">{data.user.name || data.user.email}</a> · <a href="/logout">Sign out</a>{/if}
 		</span>
 	</div>
 </header>

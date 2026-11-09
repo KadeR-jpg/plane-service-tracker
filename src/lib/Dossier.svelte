@@ -83,7 +83,7 @@
 				<div><button class="primary">Save</button>
 					{#if form?.saved}<span class="ok"> Saved.</span>{/if}
 					{#if form?.error}<span class="error"> {form.error}</span>{/if}
-					{#if prospect?.updated_at}<span class="muted"> Last updated {prospect.updated_at.slice(0, 10)}</span>{/if}
+					{#if prospect?.updated_at}<span class="muted"> Last updated {prospect.updated_at.slice(0, 10)}{prospect.updated_by ? ` by ${prospect.updated_by}` : ''}</span>{/if}
 				</div>
 			</form>
 		{:else}

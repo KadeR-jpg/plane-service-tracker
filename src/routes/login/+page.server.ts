@@ -1,21 +1,24 @@
 import { fail, redirect } from '@sveltejs/kit';
-import { COOKIE, sessionValue, tokenMatches } from '$lib/server/auth';
-import type { Actions } from './$types';
+import { authenticate, COOKIE, cookieOptions, startSession, userCount } from '$lib/server/auth';
+import { db } from '$lib/server/db';
+import type { Actions, PageServerLoad } from './$types';
+
+const safeNext = (n: string | null) => (n && n.startsWith('/') && !n.startsWith('//') ? n : '/');
+
+export const load: PageServerLoad = async ({ locals, platform, url }) => {
+	if (locals.user) redirect(303, safeNext(url.searchParams.get('next')));
+	if ((await userCount(db(platform))) === 0) redirect(303, '/setup');
+	return {};
+};
 
 export const actions: Actions = {
 	default: async ({ request, cookies, platform, url }) => {
-		const token = platform?.env?.ADMIN_TOKEN;
-		if (!token) return fail(500, { error: 'ADMIN_TOKEN secret is not configured on the Worker.' });
-		const given = String((await request.formData()).get('token') ?? '');
-		if (!(await tokenMatches(given, token))) return fail(403, { error: 'Wrong admin token.' });
-		cookies.set(COOKIE, await sessionValue(token), {
-			path: '/',
-			httpOnly: true,
-			sameSite: 'lax',
-			secure: url.protocol === 'https:',
-			maxAge: 60 * 60 * 24 * 30
-		});
-		const next = url.searchParams.get('next');
-		redirect(303, next && next.startsWith('/') && !next.startsWith('//') ? next : '/');
+		const f = await request.formData();
+		const email = String(f.get('email') ?? '');
+		const user = await authenticate(db(platform), email, String(f.get('password') ?? ''));
+		if (!user) return fail(403, { email, error: 'Wrong email or password.' });
+		const { token, maxAge } = await startSession(db(platform), user.id);
+		cookies.set(COOKIE, token, cookieOptions(url, maxAge));
+		redirect(303, safeNext(url.searchParams.get('next')));
 	}
 };

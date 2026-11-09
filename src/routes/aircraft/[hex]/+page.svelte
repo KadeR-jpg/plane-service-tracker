@@ -119,7 +119,7 @@
 		prospect={data.prospect}
 		sameOwner={data.sameOwner}
 		sameOperator={data.sameOperator}
-		admin={data.admin}
+		admin={!!data.user}
 		{form}
 	/>
 </div>
