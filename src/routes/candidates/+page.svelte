@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { tick } from 'svelte';
 	import {
 		candidatesFromCsvRows,
 		candidatesFromWords,
@@ -11,6 +12,32 @@
 	import { parseCsv } from '$lib/csv';
 
 	let { data, form } = $props();
+
+	// FAA registry upload: the zip is read in the browser; only candidate rows are sent
+	let faaStatus = $state('');
+	let faaError = $state('');
+	let faaBusy = $state(false);
+	let faaPayload = $state('');
+	let faaForm = $state<HTMLFormElement | null>(null);
+
+	async function onFaa(e: Event) {
+		const file = (e.currentTarget as HTMLInputElement).files?.[0];
+		faaError = faaStatus = '';
+		if (!file) return;
+		faaBusy = true;
+		try {
+			const { readRegistry } = await import('$lib/faa');
+			const zip = new Uint8Array(await file.arrayBuffer());
+			const out = await readRegistry(zip, new Set(data.registrations), (m) => (faaStatus = m));
+			faaStatus = `Found ${out.current.length} of ${data.registrations.length} candidates and ${out.prior.length} earlier registrations. Saving…`;
+			faaPayload = JSON.stringify(out);
+			await tick();
+			faaForm?.requestSubmit();
+		} catch (err) {
+			faaError = (err as Error).message;
+			faaBusy = false;
+		}
+	}
 
 	let parsed = $state<Candidate[] | null>(null);
 	let info = $state('');
@@ -50,9 +77,45 @@
 	}
 </script>
 
-<svelte:head><title>Candidate list · Regional Base Finder</title></svelte:head>
+<svelte:head><title>Data · Regional Base Finder</title></svelte:head>
 
-<h1>Candidate list</h1>
+<h1>Data</h1>
+
+<div class="card" style="margin-bottom:1rem">
+	<h2 style="margin-top:0">FAA registry (owner addresses)</h2>
+	<p class="muted">
+		{#if data.faa?.n}
+			Loaded {data.faa.loaded}: {data.faa.n} candidates with full owner address, {data.faa.prior} earlier registrations.
+		{:else}
+			Not loaded yet. Owner cards show only city and state until it is.
+		{/if}
+		Part 135 operators: {data.p135?.n ?? 0} candidates{data.p135?.loaded ? `, list of ${data.p135.loaded}` : ''}.
+	</p>
+	<ol class="muted">
+		<li>Download <a href="https://registry.faa.gov/database/ReleasableAircraft.zip">ReleasableAircraft.zip</a> from the FAA (about 60 MB).</li>
+		<li>Choose it below. Your browser reads it and sends only your {data.registrations.length} candidate aircraft, so it takes a few seconds and uploads a few MB.</li>
+	</ol>
+	<input type="file" accept=".zip,application/zip" onchange={onFaa} disabled={faaBusy} />
+	{#if faaStatus}<p>{faaStatus}</p>{/if}
+	{#if faaError}<p class="error">{faaError}</p>{/if}
+	<form
+		method="POST"
+		action="?/faa"
+		bind:this={faaForm}
+		use:enhance={() => async ({ update }) => {
+			await update();
+			faaBusy = false;
+			faaPayload = '';
+			faaStatus = '';
+		}}
+	>
+		<input type="hidden" name="payload" value={faaPayload} />
+	</form>
+	{#if form?.faaSaved}<p class="ok">Saved {form.faaSaved} registrations and {form.faaPrior} earlier registrations.</p>{/if}
+	{#if form?.faaError}<p class="error">{form.faaError}</p>{/if}
+</div>
+
+<h2>Candidate list</h2>
 <p class="muted">
 	{data.count} aircraft in the list{data.uploadedAt ? `, uploaded ${data.uploadedAt.slice(0, 16).replace('T', ' ')} UTC` : ''}.
 	The ingest script only downloads history for these hex codes, so after replacing the list run

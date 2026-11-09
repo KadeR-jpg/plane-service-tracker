@@ -6,7 +6,7 @@
 		{ href: '/', label: 'Summary' },
 		{ href: '/aircraft', label: 'All aircraft' },
 		{ href: '/prospects', label: 'Prospects' },
-		{ href: '/candidates', label: 'Candidate list' }
+		{ href: '/candidates', label: 'Data' }
 	];
 </script>
 

@@ -21,7 +21,7 @@ import { parseCsv } from '../../src/lib/csv.ts';
 import { Airports } from './airports.ts';
 import { scoreAircraft, type Pt } from './analyze.ts';
 import { executeFile, inserts, query, type Target } from './d1.ts';
-import { loadPart135, loadRegistry } from './enrich.ts';
+import { loadPart135, readRegistry } from './enrich.ts';
 import { availableDays, dayDone, fetchDay, log } from './fetch.ts';
 import { addDays } from './tz.ts';
 
@@ -235,7 +235,7 @@ async function cmdEnrich() {
 	log(`enrich: ${p135.length}/${regs.size} candidates on a Part 135 certificate`);
 
 	if (opt.faa) {
-		const { current, prior } = loadRegistry(opt.faa, regs);
+		const { current, prior } = await readRegistry(new Uint8Array(readFileSync(opt.faa)), regs, (m) => log(m));
 		sql.push(
 			'DELETE FROM faa_registry;',
 			'DELETE FROM faa_prior;',
@@ -251,10 +251,7 @@ async function cmdEnrich() {
 			...inserts(
 				'faa_prior',
 				['registration', 'prior_registration', 'name', 'street', 'city', 'state', 'zip', 'cert_issue_date', 'cancel_date'],
-				// duplicates in DEREG would violate the primary key
-				[...new Map(prior.map((r) => [`${r.registration}|${r.prior_registration}|${r.name}|${r.cancel_date}`, r])).values()].map(
-					(r) => [r.registration, r.prior_registration, r.name, r.street, r.city, r.state, r.zip, r.cert_issue_date, r.cancel_date]
-				)
+				prior.map((r) => [r.registration, r.prior_registration, r.name, r.street, r.city, r.state, r.zip, r.cert_issue_date, r.cancel_date])
 			)
 		);
 		log(`enrich: FAA registry matched ${current.length}/${regs.size} candidates, ${prior.length} earlier registrations`);
