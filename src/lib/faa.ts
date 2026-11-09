@@ -94,9 +94,42 @@ async function eachLine(
 	return seen;
 }
 
+/** Feeds each line of one registry text file to onLine; resolves false if the file is not there. */
+export type LineSource = (onLine: (line: string) => void) => Promise<boolean>;
+
+/** One text file inside ReleasableAircraft.zip. */
+export function zipSource(zip: Uint8Array, name: 'MASTER.TXT' | 'DEREG.TXT'): LineSource {
+	return async (onLine) => (await eachLine(zip, new RegExp(`^${name.replace('.', '\\.')}$`), (_e, l) => onLine(l))).has(name);
+}
+
+/** An unzipped MASTER.txt / DEREG.txt given as a byte stream (e.g. File.stream() in the browser). */
+export function streamSource(stream: ReadableStream<Uint8Array>): LineSource {
+	return async (onLine) => {
+		const reader = stream.getReader();
+		const dec = new TextDecoder();
+		let rest = '';
+		let n = 0;
+		for (;;) {
+			const { value, done } = await reader.read();
+			const text = rest + (done ? dec.decode() : dec.decode(value, { stream: true }));
+			const lines = text.split(/\r?\n/);
+			rest = done ? '' : lines.pop()!;
+			for (const l of lines) if (l) onLine(l);
+			if (done) break;
+			if (++n % 16 === 0) await new Promise((r) => setTimeout(r, 0));
+		}
+		return true;
+	};
+}
+
 /** Parse ReleasableAircraft.zip, keeping only the given N-numbers and earlier registrations of those airframes. */
+export function readRegistryZip(zip: Uint8Array, regs: Set<string>, progress?: (msg: string) => void) {
+	return readRegistry({ master: zipSource(zip, 'MASTER.TXT'), dereg: zipSource(zip, 'DEREG.TXT') }, regs, progress);
+}
+
+/** Registry rows for the given N-numbers, from MASTER (current) and optionally DEREG (earlier registrations). */
 export async function readRegistry(
-	zip: Uint8Array,
+	src: { master: LineSource; dereg?: LineSource },
 	regs: Set<string>,
 	progress: (msg: string) => void = () => {}
 ): Promise<{ current: RegistryRow[]; prior: PriorRow[] }> {
@@ -105,7 +138,7 @@ export async function readRegistry(
 	progress('Reading current registrations (MASTER.txt)…');
 	let mh: string[] | null = null;
 	const masterRecs: Rec[] = [];
-	const files = await eachLine(zip, /^MASTER\.TXT$/, (_e, line) => {
+	const found = await src.master((line) => {
 		if (!mh) {
 			mh = line.split(',').map(normKey);
 			return;
@@ -114,7 +147,8 @@ export async function readRegistry(
 		const f = line.split(',');
 		masterRecs.push(Object.fromEntries(mh.map((k, i) => [k, (f[i] ?? '').trim()])));
 	});
-	if (!files.has('MASTER.TXT')) throw new Error('MASTER.txt not found in the zip. Is this ReleasableAircraft.zip?');
+	if (!found) throw new Error('MASTER.txt not found. Choose ReleasableAircraft.zip, or MASTER.txt and DEREG.txt from it.');
+	if (!mh || !(mh as string[]).includes('N_NUMBER')) throw new Error('That file is not the FAA MASTER.txt (no N-NUMBER column).');
 
 	const current: RegistryRow[] = masterRecs.map((r) => ({
 		registration: normN(r.N_NUMBER ?? ''),
@@ -145,7 +179,7 @@ export async function readRegistry(
 	const serials = new Set(current.map((c) => c.serial));
 	let dh: string[] | null = null;
 	let iSerial = 1;
-	await eachLine(zip, /^DEREG\.TXT$/, (_e, line) => {
+	if (src.dereg) await src.dereg((line) => {
 		if (!dh) {
 			dh = line.split(',').map(normKey);
 			iSerial = dh.indexOf('SERIAL_NUMBER');

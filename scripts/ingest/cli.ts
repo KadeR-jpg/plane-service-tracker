@@ -21,7 +21,7 @@ import { parseCsv } from '../../src/lib/csv.ts';
 import { Airports } from './airports.ts';
 import { scoreAircraft, type Pt } from './analyze.ts';
 import { executeFile, inserts, query, type Target } from './d1.ts';
-import { loadPart135, readRegistry } from './enrich.ts';
+import { loadPart135, readRegistryZip } from './enrich.ts';
 import { availableDays, dayDone, fetchDay, log } from './fetch.ts';
 import { addDays } from './tz.ts';
 
@@ -235,7 +235,7 @@ async function cmdEnrich() {
 	log(`enrich: ${p135.length}/${regs.size} candidates on a Part 135 certificate`);
 
 	if (opt.faa) {
-		const { current, prior } = await readRegistry(new Uint8Array(readFileSync(opt.faa)), regs, (m) => log(m));
+		const { current, prior } = await readRegistryZip(new Uint8Array(readFileSync(opt.faa)), regs, (m) => log(m));
 		sql.push(
 			'DELETE FROM faa_registry;',
 			'DELETE FROM faa_prior;',

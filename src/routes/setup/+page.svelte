@@ -8,8 +8,8 @@
 	<h1>Create your account</h1>
 	<p class="muted">No accounts exist yet. This first account can add others later from the Account page.</p>
 	<form method="POST" class="stack">
-		<label>Name <input name="name" autocomplete="name" value={form?.name ?? ''} /></label>
-		<label>Email <input type="email" name="email" required autocomplete="username" value={form?.email ?? ''} /></label>
+		<label>Name <input name="name" autocomplete="name" defaultValue={form?.name ?? ''} /></label>
+		<label>Email <input type="email" name="email" required autocomplete="username" defaultValue={form?.email ?? ''} /></label>
 		<label>Password (10+ characters) <input type="password" name="password" required minlength="10" autocomplete="new-password" /></label>
 		<label>Confirm password <input type="password" name="confirm" required minlength="10" autocomplete="new-password" /></label>
 		<button class="primary">Create account</button>

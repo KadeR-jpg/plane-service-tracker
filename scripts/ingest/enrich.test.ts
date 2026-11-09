@@ -1,6 +1,7 @@
 import { strToU8, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
-import { loadPart135, readRegistry } from './enrich.ts';
+import { loadPart135, readRegistryZip } from './enrich.ts';
+import { readRegistry, streamSource } from '../../src/lib/faa.ts';
 
 const P135 = process.env.P135_XLSX;
 
@@ -16,7 +17,7 @@ describe('FAA registry zip', () => {
 			'7QQ  ,70234        ,9999999,A,OTHER MODEL SAME SERIAL,1 X ST,,X,TX,1,54553,2025,1T,2,,US,20241201,20250114,5,,,20250114,20241201\r\n';
 		// real zip order: DEREG before MASTER
 		const zip = zipSync({ 'DEREG.txt': strToU8(dereg), 'MASTER.txt': strToU8(master) });
-		const { current, prior } = await readRegistry(zip, new Set(['N100BD']));
+		const { current, prior } = await readRegistryZip(zip, new Set(['N100BD']));
 		expect(current).toHaveLength(1);
 		expect(current[0]).toMatchObject({
 			registration: 'N100BD', serial: '70234', registrant_type: 'LLC', name: 'TVPX AIRCRAFT SOLUTIONS INC TRUSTEE',
@@ -26,6 +27,30 @@ describe('FAA registry zip', () => {
 		expect(prior).toEqual([
 			expect.objectContaining({ registration: 'N100BD', prior_registration: 'N7PZ', name: 'BOMBARDIER AVIATION SERVICES', state: 'QC', cancel_date: '2025-01-14' })
 		]);
+	});
+});
+
+describe('FAA registry unzipped text files', () => {
+	it('reads MASTER.txt and DEREG.txt given as streams, split across chunk boundaries', async () => {
+		const master = 'N-NUMBER,SERIAL NUMBER,MFR MDL CODE,NAME,STREET,CITY,STATE,ZIP CODE\r\n100BD,70234,1390052,ACME LLC,1 A ST,BOISE,ID,83702\r\n';
+		const dereg = 'N-NUMBER,SERIAL-NUMBER,MFR-MDL-CODE,NAME,CANCEL-DATE\r\n7PZ,70234,1390052,OLD OWNER,20250114\r\n';
+		const chunked = (s: string) => {
+			const b = strToU8(s);
+			return new ReadableStream<Uint8Array>({
+				start(c) {
+					for (let i = 0; i < b.length; i += 7) c.enqueue(b.subarray(i, i + 7));
+					c.close();
+				}
+			});
+		};
+		const r = await readRegistry({ master: streamSource(chunked(master)), dereg: streamSource(chunked(dereg)) }, new Set(['N100BD']));
+		expect(r.current[0]).toMatchObject({ registration: 'N100BD', name: 'ACME LLC', street: '1 A ST', zip: '83702' });
+		expect(r.prior[0]).toMatchObject({ prior_registration: 'N7PZ', name: 'OLD OWNER', cancel_date: '2025-01-14' });
+	});
+
+	it('rejects a file that is not MASTER.txt', async () => {
+		const notMaster = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(strToU8('a,b,c\n1,2,3\n')); c.close(); } });
+		await expect(readRegistry({ master: streamSource(notMaster) }, new Set(['N1']))).rejects.toThrow(/not the FAA MASTER/);
 	});
 });
 

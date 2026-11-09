@@ -76,4 +76,4 @@ export async function loadPart135(file?: string): Promise<Part135Row[]> {
 	return out;
 }
 
-export { readRegistry, type PriorRow, type RegistryRow } from '../../src/lib/faa.ts';
+export { readRegistryZip, type PriorRow, type RegistryRow } from '../../src/lib/faa.ts';

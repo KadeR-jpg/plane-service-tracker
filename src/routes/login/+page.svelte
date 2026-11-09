@@ -7,7 +7,7 @@
 <div class="auth-box card">
 	<h1>Sign in</h1>
 	<form method="POST" class="stack">
-		<label>Email <input type="email" name="email" required autocomplete="username" value={form?.email ?? ''} /></label>
+		<label>Email <input type="email" name="email" required autocomplete="username" defaultValue={form?.email ?? ''} /></label>
 		<label>Password <input type="password" name="password" required autocomplete="current-password" /></label>
 		<button class="primary">Sign in</button>
 		{#if form?.error}<p class="error">{form.error}</p>{/if}

@@ -25,8 +25,8 @@
 		<h2>Add a user</h2>
 		<p class="muted">Set a starting password and send it to them; they can change it here after signing in.</p>
 		<form method="POST" action="?/add" class="stack" use:enhance>
-			<label>Name <input name="name" value={form?.name ?? ''} /></label>
-			<label>Email <input type="email" name="email" required value={form?.email ?? ''} /></label>
+			<label>Name <input name="name" defaultValue={form?.name ?? ''} /></label>
+			<label>Email <input type="email" name="email" required defaultValue={form?.email ?? ''} /></label>
 			<label>Starting password (10+ characters) <input type="text" name="password" required minlength="10" autocomplete="off" /></label>
 			<button class="primary">Add user</button>
 			{#if form?.addError}<p class="error">{form.addError}</p>{/if}
