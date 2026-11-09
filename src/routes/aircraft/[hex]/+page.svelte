@@ -1,5 +1,6 @@
 <script lang="ts">
-	let { data } = $props();
+	import Dossier from '$lib/Dossier.svelte';
+	let { data, form } = $props();
 	const c = $derived(data.candidate);
 	const pct = (x: unknown) => `${Math.round(Number(x ?? 0) * 100)}%`;
 
@@ -40,7 +41,7 @@
 
 <svelte:head><title>{c.registration || c.hex} · Regional Base Finder</title></svelte:head>
 
-<p><a href="/aircraft">← All aircraft</a></p>
+<p><a href="/aircraft">← All aircraft</a> · <a href="#dossier">Prospect dossier ↓</a></p>
 <h1>{c.registration || c.hex} <span class="muted mono">{c.hex}</span></h1>
 <p class="muted">
 	{c.model}{c.adsb_type ? ` · ADS-B type ${c.adsb_type}` : ''}{c.adsb_registration && c.adsb_registration !== c.registration ? ` · ADS-B reg ${c.adsb_registration}` : ''}
@@ -107,6 +108,21 @@
 		</table>
 	</div>
 {/if}
+
+<div id="dossier">
+	<Dossier
+		candidate={data.candidate}
+		registry={data.registry}
+		prior={data.prior}
+		operator={data.operator}
+		callsigns={data.callsigns}
+		prospect={data.prospect}
+		sameOwner={data.sameOwner}
+		sameOperator={data.sameOperator}
+		admin={data.admin}
+		{form}
+	/>
+</div>
 
 <style>
 	.cal { display: grid; grid-template-columns: repeat(auto-fill, 14px); gap: 3px; }

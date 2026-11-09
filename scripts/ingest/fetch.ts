@@ -16,6 +16,8 @@ import { isGround, type Pt } from './analyze.ts';
 import { tarEntries } from './tar.ts';
 
 const BASE = 'https://github.com/adsblol/globe_history_{year}/releases/download/{tag}/{tag}.tar.{part}';
+/** Bump when the compact trace format changes; older cached days are refetched. */
+export const FORMAT_VERSION = 2;
 const TRACE_RE = /(?:^|\/)traces\/[0-9a-f]{2}\/trace_full_([0-9a-f]{6})\.json$/;
 
 export function log(msg: string, file = 'progress.log') {
@@ -103,14 +105,22 @@ export function compact(d: RawTrace) {
 			lastT = p[0];
 		}
 	}
-	return { icao: d.icao, r: d.r, t: d.t, desc: d.desc, ownOp: d.ownOp, pts: keep };
+	// callsigns broadcast during the day (operator ICAO prefix, or the N-number), with point counts
+	const cs: Record<string, number> = {};
+	for (const p of d.trace ?? []) {
+		const info = p[8] as { flight?: string } | null | undefined;
+		const f = info?.flight?.trim();
+		if (f) cs[f] = (cs[f] ?? 0) + 1;
+	}
+	return { icao: d.icao, r: d.r, t: d.t, desc: d.desc, ownOp: d.ownOp, cs, pts: keep };
 }
 
 export function dayDone(outRoot: string, day: string, hexes: Set<string>): boolean {
 	const f = `${outRoot}/${day}/.done`;
 	if (!existsSync(f)) return false;
 	try {
-		const done = JSON.parse(readFileSync(f, 'utf8')) as { hexes: string[] };
+		const done = JSON.parse(readFileSync(f, 'utf8')) as { hexes: string[]; v?: number };
+		if ((done.v ?? 1) < FORMAT_VERSION) return false;
 		const have = new Set(done.hexes);
 		for (const h of hexes) if (!have.has(h)) return false;
 		return true;
@@ -148,7 +158,7 @@ export async function fetchDay(day: string, outRoot: string, hexes: Set<string>)
 		kept++;
 	}
 	if (seen === 0) throw new Error(`${day}: no traces in archive`);
-	writeFileSync(`${tmp}/.done`, JSON.stringify({ kept, seen, hexes: [...hexes].sort() }));
+	writeFileSync(`${tmp}/.done`, JSON.stringify({ v: FORMAT_VERSION, kept, seen, hexes: [...hexes].sort() }));
 	rmSync(outDir, { recursive: true, force: true });
 	renameSync(tmp, outDir);
 	log(`${day} ok parts=${urls.length} traces_in_archive=${seen} kept=${kept} secs=${Math.round((Date.now() - t0) / 1000)}`);

@@ -29,6 +29,7 @@
     "wrangler": "^4.40.0"
   },
   "dependencies": {
+    "fflate": "0.8.2",
     "pdfjs-dist": "5.7.284",
     "read-excel-file": "9.3.12",
     "tz-lookup": "6.1.25"

@@ -5,6 +5,10 @@
  *   npm run ingest -- score [--local] [--dry-run]
  *   npm run ingest -- run   [--days 90] [--local]          (fetch + score)
  *   npm run ingest -- import-candidates <file.xlsx|csv> [--local]   (replace the candidate list)
+ *   npm run ingest -- enrich [--faa ReleasableAircraft.zip] [--part135 file.xlsx] [--local]
+ *       Part 135 operators (downloaded from faa.gov unless --part135 is given) and, with --faa, the FAA
+ *       registry (full owner address, co-owners, earlier owners). Download the zip in a browser from
+ *       https://registry.faa.gov/database/ReleasableAircraft.zip (the site blocks scripts).
  *
  * Candidate hexes are read from D1 (uploaded in the app). `--candidates file.csv` overrides that.
  * Default target is the remote (deployed) D1; `--local` uses wrangler's local dev database.
@@ -17,6 +21,7 @@ import { parseCsv } from '../../src/lib/csv.ts';
 import { Airports } from './airports.ts';
 import { scoreAircraft, type Pt } from './analyze.ts';
 import { executeFile, inserts, query, type Target } from './d1.ts';
+import { loadPart135, loadRegistry } from './enrich.ts';
 import { availableDays, dayDone, fetchDay, log } from './fetch.ts';
 import { addDays } from './tz.ts';
 
@@ -29,7 +34,9 @@ const { values: opt, positionals } = parseArgs({
 		candidates: { type: 'string' },
 		traces: { type: 'string', default: 'traces' },
 		data: { type: 'string', default: 'data' },
-		'dry-run': { type: 'boolean', default: false }
+		'dry-run': { type: 'boolean', default: false },
+		faa: { type: 'string' },
+		part135: { type: 'string' }
 	}
 });
 const target: Target = opt.local ? '--local' : '--remote';
@@ -110,21 +117,30 @@ async function cmdScore(hexes: Set<string>) {
 	function loadAircraft(hex: string) {
 		const p: Pt[] = [];
 		let m: { r?: string; t?: string } = {};
+		const cs = new Map<string, { days: number; last: string }>();
 		for (const day of daysByHex.get(hex)!) {
 			const d = JSON.parse(readFileSync(`${opt.traces}/${day}/${hex}.json`, 'utf8'));
 			for (const x of d.pts as Pt[]) p.push(x);
 			m = { r: d.r, t: d.t };
+			for (const c of Object.keys(d.cs ?? {})) {
+				const e = cs.get(c) ?? { days: 0, last: day };
+				e.days++;
+				e.last = day;
+				cs.set(c, e);
+			}
 		}
-		return { p, m };
+		return { p, m, cs };
 	}
 
 	const scoreRows: unknown[][] = [];
 	const nightRows: unknown[][] = [];
 	const landRows: unknown[][] = [];
+	const csRows: unknown[][] = [];
 	const usedAirports = new Set<string>();
 	const fetched = new Set(use);
 	for (const hex of daysByHex.keys()) {
-		const { p, m } = loadAircraft(hex);
+		const { p, m, cs } = loadAircraft(hex);
+		for (const [c, e] of cs) csRows.push([hex, c, e.days, e.last]);
 		const { score: s, nights, landings } = scoreAircraft(hex, p, ap, wStart, wEnd, fetched);
 		scoreRows.push([
 			hex, s.first_seen, s.last_seen, m.r ?? null, m.t ?? null, s.top_airport, s.top_airport_share,
@@ -149,6 +165,7 @@ async function cmdScore(hexes: Set<string>) {
 		'DELETE FROM scores;',
 		'DELETE FROM overnights;',
 		'DELETE FROM landings;',
+		'DELETE FROM callsigns;',
 		'DELETE FROM airports;',
 		...inserts('airports', ['ident', 'name', 'city', 'iso_region', 'lat', 'lon', 'in_region'], airportRows),
 		...inserts(
@@ -160,6 +177,7 @@ async function cmdScore(hexes: Set<string>) {
 		),
 		...inserts('overnights', ['hex', 'night', 'airport', 'in_region'], nightRows),
 		...inserts('landings', ['hex', 't', 'airport', 'in_region', 'inferred'], landRows),
+		...inserts('callsigns', ['hex', 'callsign', 'days', 'last_day'], csRows),
 		...inserts(
 			'ingest_runs',
 			['window_start', 'window_end', 'days', 'candidates', 'aircraft_seen', 'finished_at'],
@@ -198,6 +216,60 @@ async function cmdImportCandidates(file: string | undefined) {
 	log(`candidates written to D1 (${target.slice(2)})`);
 }
 
+async function cmdEnrich() {
+	const cands = query<{ hex: string; registration: string }>('SELECT hex, registration FROM candidates', target);
+	const regs = new Set(cands.map((c) => c.registration.toUpperCase()));
+	if (!regs.size) throw new Error('no candidates in D1');
+	const today = new Date().toISOString().slice(0, 10);
+	const sql: string[] = [];
+
+	const p135 = (await loadPart135(opt.part135)).filter((r) => regs.has(r.registration));
+	sql.push(
+		'DELETE FROM part135;',
+		...inserts(
+			'part135',
+			['registration', 'operator', 'designator', 'chdo', 'cfr', 'model', 'serial', 'list_date'],
+			p135.map((r) => [r.registration, r.operator, r.designator, r.chdo, r.cfr, r.model, r.serial, today])
+		)
+	);
+	log(`enrich: ${p135.length}/${regs.size} candidates on a Part 135 certificate`);
+
+	if (opt.faa) {
+		const { current, prior } = loadRegistry(opt.faa, regs);
+		sql.push(
+			'DELETE FROM faa_registry;',
+			'DELETE FROM faa_prior;',
+			...inserts(
+				'faa_registry',
+				['registration', 'serial', 'year_mfr', 'registrant_type', 'name', 'street', 'street2', 'city', 'state', 'zip',
+					'county', 'country', 'other_names', 'cert_issue_date', 'last_action_date', 'expiration_date',
+					'fract_owner', 'status_code', 'file_date'],
+				current.map((r) => [r.registration, r.serial, r.year_mfr, r.registrant_type, r.name, r.street, r.street2,
+					r.city, r.state, r.zip, r.county, r.country, r.other_names, r.cert_issue_date, r.last_action_date,
+					r.expiration_date, r.fract_owner, r.status_code, today])
+			),
+			...inserts(
+				'faa_prior',
+				['registration', 'prior_registration', 'name', 'street', 'city', 'state', 'zip', 'cert_issue_date', 'cancel_date'],
+				// duplicates in DEREG would violate the primary key
+				[...new Map(prior.map((r) => [`${r.registration}|${r.prior_registration}|${r.name}|${r.cancel_date}`, r])).values()].map(
+					(r) => [r.registration, r.prior_registration, r.name, r.street, r.city, r.state, r.zip, r.cert_issue_date, r.cancel_date]
+				)
+			)
+		);
+		log(`enrich: FAA registry matched ${current.length}/${regs.size} candidates, ${prior.length} earlier registrations`);
+	}
+	mkdirSync('ingest-out', { recursive: true });
+	writeFileSync('ingest-out/enrich.sql', sql.join('\n') + '\n');
+	if (opt['dry-run']) return;
+	executeFile('ingest-out/enrich.sql', target);
+	log(`enrichment written to D1 (${target.slice(2)})`);
+}
+
+if (cmd === 'enrich') {
+	await cmdEnrich();
+	process.exit(0);
+}
 if (cmd === 'import-candidates') {
 	await cmdImportCandidates(positionals[1]);
 	process.exit(0);
@@ -209,6 +281,6 @@ else if (cmd === 'run') {
 	await cmdFetch(hexes);
 	await cmdScore(hexes);
 } else {
-	console.error(`unknown command ${cmd}; use fetch | score | run | import-candidates`);
+	console.error(`unknown command ${cmd}; use fetch | score | run | import-candidates | enrich`);
 	process.exit(1);
 }

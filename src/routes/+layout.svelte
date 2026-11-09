@@ -1,10 +1,11 @@
 <script lang="ts">
 	import '../app.css';
 	import { page } from '$app/state';
-	let { children } = $props();
+	let { children, data } = $props();
 	const links = [
 		{ href: '/', label: 'Summary' },
 		{ href: '/aircraft', label: 'All aircraft' },
+		{ href: '/prospects', label: 'Prospects' },
 		{ href: '/candidates', label: 'Candidate list' }
 	];
 </script>
@@ -17,6 +18,9 @@
 				<a href={l.href} class:active={l.href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(l.href)}>{l.label}</a>
 			{/each}
 		</nav>
+		<span class="auth">
+			{#if data.admin}<a href="/logout">Sign out</a>{:else}<a href="/login?next={encodeURIComponent(page.url.pathname)}">Sign in</a>{/if}
+		</span>
 	</div>
 </header>
 
@@ -31,4 +35,5 @@
 	nav { display: flex; gap: 1rem; flex-wrap: wrap; }
 	nav a { color: var(--muted); }
 	nav a.active { color: var(--accent); font-weight: 600; }
+	.auth { margin-left: auto; font-size: 13px; }
 </style>

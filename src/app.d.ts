@@ -1,5 +1,8 @@
 declare global {
 	namespace App {
+		interface Locals {
+			admin: boolean;
+		}
 		interface Platform {
 			env: {
 				DB: D1Database;
