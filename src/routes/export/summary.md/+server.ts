@@ -27,9 +27,16 @@ export const GET: RequestHandler = async ({ platform, url }) => {
 		`- Aircraft with any in-region activity (overnight or landing): **${active.length}**`,
 		`- Likely based (region_share >= ${minShare} and nights_observed >= ${minNights}): **${based.length}**`,
 		'',
+		'## Column definitions',
+		'',
+		'- **Nights tracked**: nights where the 3 AM local parking location is known (anywhere).',
+		'- **Nights in region**: of those, nights parked at an in-region airport.',
+		'- **Region share**: nights in region / nights tracked.',
+		'- **Landings in region**: arrivals at in-region airports, including day trips.',
+		'',
 		'## Likely based in region',
 		'',
-		'| Registration | Hex | Model | Owner | Top airport | Top share | Nights obs | Nights in region | Region share | Landings in region |',
+		'| Registration | Hex | Model | Owner | Top overnight airport | % of nights there | Nights tracked | Nights in region | Region share | Landings in region |',
 		'|---|---|---|---|---|---|---|---|---|---|'
 	);
 	for (const r of based)
@@ -41,7 +48,7 @@ export const GET: RequestHandler = async ({ platform, url }) => {
 		'',
 		'## Frequent visitors (>= 3 in-region landings, not classed as based)',
 		'',
-		'| Registration | Hex | Model | Owner | Top airport | Nights obs | Nights in region | Region share | Landings in region | In-region airports (nights/landings) |',
+		'| Registration | Hex | Model | Owner | Top overnight airport | Nights tracked | Nights in region | Region share | Landings in region | In-region airports (nights/landings) |',
 		'|---|---|---|---|---|---|---|---|---|---|'
 	);
 	for (const r of visitors)

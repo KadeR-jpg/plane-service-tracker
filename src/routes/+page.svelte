@@ -1,4 +1,6 @@
 <script lang="ts">
+	import Glossary from '$lib/Glossary.svelte';
+	import Th from '$lib/Th.svelte';
 	let { data } = $props();
 	const pct = (x: number) => `${Math.round(x * 100)}%`;
 	const q = $derived(`minShare=${data.minShare}&minNights=${data.minNights}`);
@@ -26,8 +28,8 @@
 </div>
 
 <form class="inline card" method="GET">
-	<label>Min region share <input name="minShare" type="number" step="0.05" min="0" max="1" value={data.minShare} /></label>
-	<label>Min nights observed <input name="minNights" type="number" step="1" min="0" value={data.minNights} /></label>
+	<label title="Share of tracked nights parked in the region">Min region share <input name="minShare" type="number" step="0.05" min="0" max="1" value={data.minShare} /></label>
+	<label title="Minimum nights with a known 3 AM location">Min nights tracked <input name="minNights" type="number" step="1" min="0" value={data.minNights} /></label>
 	<button type="submit">Apply</button>
 	<span class="muted" style="margin-left:auto">
 		Export:
@@ -37,16 +39,21 @@
 	</span>
 </form>
 
+<Glossary />
+
 <h2>Likely based ({data.based.length})</h2>
-<p class="muted">region_share ≥ {data.minShare} and nights_observed ≥ {data.minNights}</p>
+<p class="muted">
+	Parked in the region on at least {Math.round(data.minShare * 100)}% of tracked nights, with at least {data.minNights}
+	nights tracked.
+</p>
 {#if data.based.length}
 	<div class="table-wrap">
 		<table>
 			<thead>
 				<tr>
-					<th>Registration</th><th>Model</th><th>Registered owner</th><th>Top airport</th>
-					<th class="num">Top share</th><th class="num">Nights</th><th class="num">In region</th>
-					<th>Region share</th><th class="num">Landings in region</th><th>Last seen</th>
+					<Th k="registration" /><Th k="model" /><Th k="registered_owner" /><Th k="top_airport" />
+					<Th k="top_airport_share" num /><Th k="nights_observed" num /><Th k="nights_in_region" num />
+					<Th k="region_share" /><Th k="landings_in_region" num /><Th k="last_seen" />
 				</tr>
 			</thead>
 			<tbody>
@@ -72,15 +79,18 @@
 {/if}
 
 <h2>Frequent visitors ({data.visitors.length})</h2>
-<p class="muted">≥ 3 in-region landings, not classed as based: second-home, seasonal or charter traffic.</p>
+<p class="muted">
+	3 or more landings in the region but not based here by the rule above: usually second-home, seasonal or charter
+	traffic.
+</p>
 {#if data.visitors.length}
 	<div class="table-wrap">
 		<table>
 			<thead>
 				<tr>
-					<th>Registration</th><th>Model</th><th>Registered owner</th><th>Top airport</th>
-					<th class="num">Nights</th><th class="num">In region</th><th class="num">Region share</th>
-					<th class="num">Landings in region</th><th>In-region airports (nights/landings)</th>
+					<Th k="registration" /><Th k="model" /><Th k="registered_owner" /><Th k="top_airport" />
+					<Th k="nights_observed" num /><Th k="nights_in_region" num /><Th k="region_share" num />
+					<Th k="landings_in_region" num /><Th k="region_airports" />
 				</tr>
 			</thead>
 			<tbody>
@@ -109,8 +119,11 @@
 	<table>
 		<thead>
 			<tr>
-				<th>Airport</th><th>Name</th><th>State</th><th class="num">Likely-based aircraft</th>
-				<th class="num">Distinct aircraft overnighting</th><th class="num">Overnights</th><th class="num">Landings</th>
+				<th>Airport</th><th>Name</th><th>State</th>
+				<th class="num" title="Likely-based aircraft whose main in-region airport is this one">Based aircraft</th>
+				<th class="num" title="Different aircraft that spent at least one night here">Aircraft overnighting</th>
+				<th class="num" title="Total aircraft-nights parked here">Overnights</th>
+				<th class="num" title="Total arrivals here">Landings</th>
 			</tr>
 		</thead>
 		<tbody>

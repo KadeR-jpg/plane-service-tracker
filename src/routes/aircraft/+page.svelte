@@ -1,4 +1,6 @@
 <script lang="ts">
+	import Glossary from '$lib/Glossary.svelte';
+	import { TERMS } from '$lib/glossary';
 	import type { ResultRow } from '$lib/server/db';
 	let { data } = $props();
 
@@ -8,21 +10,13 @@
 	let sortKey = $state<Key>('region_share');
 	let desc = $state(true);
 
-	const cols: { k: Key; label: string; num?: boolean }[] = [
-		{ k: 'registration', label: 'Registration' },
-		{ k: 'hex', label: 'Hex' },
-		{ k: 'model', label: 'Model' },
-		{ k: 'registered_owner', label: 'Registered owner' },
-		{ k: 'owner_city_state', label: 'Owner city/state' },
-		{ k: 'top_airport', label: 'Top airport' },
-		{ k: 'top_airport_share', label: 'Top share', num: true },
-		{ k: 'nights_observed', label: 'Nights', num: true },
-		{ k: 'nights_in_region', label: 'In region', num: true },
-		{ k: 'region_share', label: 'Region share', num: true },
-		{ k: 'landings_in_region', label: 'Landings in region', num: true },
-		{ k: 'first_seen', label: 'First seen' },
-		{ k: 'last_seen', label: 'Last seen' }
-	];
+	const numeric = new Set<Key>(['top_airport_share', 'nights_observed', 'nights_in_region', 'region_share', 'landings_in_region']);
+	const cols = (
+		[
+			'registration', 'hex', 'model', 'registered_owner', 'owner_city_state', 'top_airport', 'top_airport_share',
+			'nights_observed', 'nights_in_region', 'region_share', 'landings_in_region', 'first_seen', 'last_seen'
+		] as const
+	).map((k) => ({ k, label: TERMS[k].label, help: TERMS[k].help, num: numeric.has(k) }));
 
 	const rows = $derived.by(() => {
 		const f = filter.trim().toLowerCase();
@@ -58,6 +52,7 @@
 <svelte:head><title>All aircraft · Regional Base Finder</title></svelte:head>
 
 <h1>All candidates</h1>
+<Glossary />
 <form class="inline" style="margin: 0.75rem 0" onsubmit={(e) => e.preventDefault()}>
 	<label>Filter <input bind:value={filter} placeholder="registration, owner, airport…" /></label>
 	<label style="display:flex;gap:6px;align-items:center;color:var(--text)">
@@ -71,7 +66,7 @@
 		<thead>
 			<tr>
 				{#each cols as c}
-					<th class:num={c.num}>
+					<th class:num={c.num} title={c.help}>
 						<a href="#sort" onclick={(e) => { e.preventDefault(); sortBy(c.k); }}>
 							{c.label}{sortKey === c.k ? (desc ? ' ↓' : ' ↑') : ''}
 						</a>

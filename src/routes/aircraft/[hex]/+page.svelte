@@ -51,9 +51,9 @@
 	<p class="card">Not seen in the ADS-B window. Possible causes: PIA/LADD rotating hex, no flights, or no receiver coverage.</p>
 {:else}
 	<div class="stats">
-		<div class="card stat"><div class="v">{pct(c.region_share)}</div><div class="l">Region share ({c.nights_in_region}/{c.nights_observed} nights)</div></div>
-		<div class="card stat"><div class="v mono">{c.top_airport ?? '—'}</div><div class="l">Top overnight airport ({pct(c.top_airport_share)})</div></div>
-		<div class="card stat"><div class="v">{c.landings_in_region}</div><div class="l">Landings in region (of {c.landings_total})</div></div>
+		<div class="card stat"><div class="v">{pct(c.region_share)}</div><div class="l">Region share: {c.nights_in_region} of {c.nights_observed} tracked nights parked in region</div></div>
+		<div class="card stat"><div class="v mono">{c.top_airport ?? '—'}</div><div class="l">Top overnight airport ({pct(c.top_airport_share)} of tracked nights)</div></div>
+		<div class="card stat"><div class="v">{c.landings_in_region}</div><div class="l">Landings in region ({c.landings_total} landings anywhere)</div></div>
 		<div class="card stat"><div class="v" style="font-size:1rem">{c.first_seen}<br />{c.last_seen}</div><div class="l">First / last seen</div></div>
 	</div>
 

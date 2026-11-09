@@ -77,3 +77,4 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button:disabled { opacity: 0.5; cursor: default; }
 .error { color: var(--bad); }
 .ok { color: var(--good); }
+th[title] .term, th[title] > a { text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
