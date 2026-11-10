@@ -340,6 +340,29 @@ async function refreshPart135(env: Env) {
 	]);
 }
 
+// ---------------------------------------------------------------- job log
+
+let logReady = false;
+async function jobLog(env: Env, m: Msg, attempt: number, event: 'start' | 'done' | 'error', secs?: number, detail = '') {
+	try {
+		if (!logReady) {
+			await env.DB.prepare(
+				`CREATE TABLE IF NOT EXISTS refresh_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, run INTEGER,
+				 kind TEXT NOT NULL, day TEXT, attempt INTEGER, event TEXT NOT NULL, secs REAL, detail TEXT NOT NULL DEFAULT '')`
+			).run();
+			logReady = true;
+		}
+		const run = 'run' in m ? m.run : null;
+		const day = m.k === 'day' ? m.day : m.k === 'score' ? String(m.offset) : null;
+		await env.DB.prepare('INSERT INTO refresh_log (ts, run, kind, day, attempt, event, secs, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+			.bind(now(), run, m.k, day, attempt, event, secs ?? null, detail.slice(0, 500))
+			.run();
+		if (Math.random() < 0.02) await env.DB.prepare("DELETE FROM refresh_log WHERE ts < datetime('now', '-14 days')").run();
+	} catch {
+		// logging must never break a job
+	}
+}
+
 // ---------------------------------------------------------------- entry points
 
 export default {
@@ -351,6 +374,8 @@ export default {
 	async queue(batch: MessageBatch<Msg>, env: Env) {
 		for (const msg of batch.messages) {
 			const m = msg.body;
+			const t0 = Date.now();
+			if (m.k === 'day') await jobLog(env, m, msg.attempts, 'start');
 			try {
 				if (m.k === 'plan') await plan(env, m.trigger);
 				else if (m.k === 'day') {
@@ -360,9 +385,11 @@ export default {
 					await scoreSlice(env, m);
 					await sliceFinished(env, m.run);
 				} else if (m.k === 'part135') await refreshPart135(env);
+				if (m.k !== 'score') await jobLog(env, m, msg.attempts, 'done', (Date.now() - t0) / 1000);
 				msg.ack();
 			} catch (err) {
 				console.error(m.k, (m as { day?: string }).day ?? '', err);
+				await jobLog(env, m, msg.attempts, 'error', (Date.now() - t0) / 1000, String((err as Error)?.stack ?? err));
 				if (msg.attempts < MAX_ATTEMPTS) msg.retry({ delaySeconds: 60 * msg.attempts });
 				else {
 					// give up on this job but keep the run moving
@@ -376,9 +403,19 @@ export default {
 
 	/** GET /status for a quick look; everything else 404 (the app is a separate worker) */
 	async fetch(req: Request, env: Env) {
-		if (new URL(req.url).pathname === '/status') {
+		const path = new URL(req.url).pathname;
+		if (path === '/status') {
 			const r = await env.DB.prepare('SELECT * FROM refresh_runs ORDER BY id DESC LIMIT 1').first();
 			return Response.json(r ?? {});
+		}
+		if (path === '/status/log') {
+			const [log, days] = await Promise.all([
+				env.DB.prepare('SELECT ts, run, kind, day, attempt, event, secs, detail FROM refresh_log ORDER BY id DESC LIMIT 40')
+					.all()
+					.catch(() => ({ results: [] })),
+				env.DB.prepare('SELECT COUNT(*) AS n, MAX(processed_at) AS last FROM ingest_days').first()
+			]);
+			return Response.json({ days, log: log.results });
 		}
 		return new Response('Not found', { status: 404 });
 	}
