@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Dossier from '$lib/Dossier.svelte';
+	import { etaText } from '$lib/eta';
 	let { data, form } = $props();
 	const c = $derived(data.candidate);
 	const pct = (x: unknown) => `${Math.round(Number(x ?? 0) * 100)}%`;
@@ -48,9 +49,22 @@
 	<br />Registered owner: {c.registered_owner || '—'}{c.owner_city || c.owner_state ? `, ${[c.owner_city, c.owner_state].filter(Boolean).join(', ')}` : ''}
 </p>
 
-{#if !c.first_seen}
+{#if !c.first_seen && data.progress.running}
+	<p class="card banner">
+		<strong>Flight history is downloading</strong>
+		({data.progress.phase === 'scoring' ? 'recalculating scores' : `${data.progress.daysDone} of ${data.progress.daysTotal} days`}).
+		This aircraft's history appears {etaText(data.progress.etaMin)}; partial results may show up sooner. The owner and
+		operator details below are already available.
+	</p>
+{:else if !c.first_seen}
 	<p class="card">Not seen in the ADS-B window. Possible causes: PIA/LADD rotating hex, no flights, or no receiver coverage.</p>
 {:else}
+	{#if c.partial}
+		<p class="card banner">
+			<strong>Partial results</strong>: based on the days downloaded so far{data.progress.running && data.progress.phase === 'downloading' ? ` (${data.progress.daysDone} of ${data.progress.daysTotal})` : ''}.
+			Final numbers arrive when the current refresh finishes{data.progress.running ? `, ${etaText(data.progress.etaMin)}` : ''}.
+		</p>
+	{/if}
 	<div class="stats">
 		<div class="card stat"><div class="v">{pct(c.region_share)}</div><div class="l">Region share: {c.nights_in_region} of {c.nights_observed} tracked nights parked in region</div></div>
 		<div class="card stat"><div class="v mono">{c.top_airport ?? '—'}</div><div class="l">Top overnight airport ({pct(c.top_airport_share)} of tracked nights)</div></div>

@@ -82,3 +82,4 @@ th[title] .term, th[title] > a { text-decoration: underline dotted; text-underli
 .auth-box h1 { margin-bottom: 0.75rem; }
 .stack { display: grid; gap: 0.6rem; }
 .stack input, .stack select, .stack textarea { width: 100%; }
+.banner { border-color: var(--accent); background: var(--accent-soft); }

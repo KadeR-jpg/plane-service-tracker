@@ -30,6 +30,7 @@ export const load: PageServerLoad = async ({ platform, url }) => {
 			top_region_airport: r.top_region_airport ?? r.top_airport ?? '',
 			region_share: r.region_share,
 			nights_observed: r.nights_observed,
+			partial: r.partial,
 			landings_in_region: r.landings_in_region,
 			status: p?.status ?? 'new',
 			contact: p?.contact_name ? `${p.contact_name}${p.contact_role ? `, ${p.contact_role}` : ''}` : '',

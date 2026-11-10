@@ -1,14 +1,16 @@
 import { classify, db, lastRun, regionAirportCounts, regionAirportsByHex, results, thresholds } from '$lib/server/db';
+import { latestRefresh, refreshProgress } from '$lib/server/refresh';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ platform, url }) => {
 	const d = db(platform);
 	const { minShare, minNights } = thresholds(url);
-	const [rows, airports, byHex, run] = await Promise.all([
+	const [rows, airports, byHex, run, refresh] = await Promise.all([
 		results(d),
 		regionAirportCounts(d),
 		regionAirportsByHex(d),
-		lastRun(d)
+		lastRun(d),
+		latestRefresh(d)
 	]);
 	const { based, active, visitors, seen } = classify(rows, minShare, minNights);
 	const basedAt = new Map<string, number>();
@@ -17,6 +19,9 @@ export const load: PageServerLoad = async ({ platform, url }) => {
 		basedAt.set(k, (basedAt.get(k) ?? 0) + 1);
 	}
 	return {
+		progress: refreshProgress(refresh),
+		partialCount: rows.filter((r) => r.partial).length,
+		missingCount: rows.filter((r) => !r.first_seen).length,
 		minShare,
 		minNights,
 		run,

@@ -56,7 +56,7 @@
 		<tbody>
 			{#each rows as r (r.hex)}
 				<tr>
-					<td><a href="/aircraft/{r.hex}#dossier">{r.registration}</a></td>
+					<td><a href="/aircraft/{r.hex}#dossier">{r.registration}</a>{#if r.partial} <span class="pill warn" title="Partial results while the refresh is running">partial</span>{/if}</td>
 					<td>{#if r.kind === 'based'}<span class="pill good">based</span>{:else}<span class="pill warn">visitor</span>{/if}</td>
 					<td>{r.model}</td>
 					<td class="wrap">{r.owner}{#if isTrustee(r.owner)} <span class="pill warn" title="Trust-owned: contact the operator">trust</span>{/if}<br /><span class="muted">{r.owner_place}</span></td>

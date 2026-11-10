@@ -24,6 +24,7 @@ export interface ResultRow {
 	top_region_airport: string | null;
 	adsb_registration: string | null;
 	adsb_type: string | null;
+	partial: number;
 }
 
 export const RESULT_FIELDS = [
@@ -41,7 +42,7 @@ export async function results(d: D1Database): Promise<ResultRow[]> {
 			        COALESCE(s.nights_observed, 0) AS nights_observed, COALESCE(s.nights_in_region, 0) AS nights_in_region,
 			        COALESCE(s.region_share, 0) AS region_share, COALESCE(s.landings_in_region, 0) AS landings_in_region,
 			        s.first_seen, s.last_seen, COALESCE(s.landings_total, 0) AS landings_total, s.top_region_airport,
-			        s.adsb_registration, s.adsb_type
+			        s.adsb_registration, s.adsb_type, COALESCE(s.partial, 0) AS partial
 			   FROM candidates c LEFT JOIN scores s ON s.hex = c.hex
 			  ORDER BY region_share DESC, nights_observed DESC, landings_in_region DESC, c.registration`
 		)

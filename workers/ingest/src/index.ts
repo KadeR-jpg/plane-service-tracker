@@ -33,11 +33,13 @@ export interface Env {
 export type Msg =
 	| { k: 'plan'; trigger: 'schedule' | 'upload' | 'manual' }
 	| { k: 'day'; run: number; day: string; since: string | null; snapshot: string }
-	| { k: 'score'; run: number; offset: number; limit: number }
+	| { k: 'score'; run: number; offset: number; limit: number; hexes?: string[]; interim?: boolean }
 	| { k: 'part135' };
 
 const WINDOW_DAYS = 90;
 const SCORE_SLICE = 40;
+/** while downloading, give aircraft without results partial results every this many days */
+const INTERIM_EVERY = 15;
 const MAX_ATTEMPTS = 3;
 /** a run older than this is treated as dead (a job was lost) and a new one may start */
 const STALE_RUN_MS = 6 * 3600_000;
@@ -145,7 +147,7 @@ async function plan(env: Env, trigger: string) {
 
 // ---------------------------------------------------------------- day
 
-async function processDay(env: Env, m: Extract<Msg, { k: 'day' }>) {
+async function processDay(env: Env, m: Extract<Msg, { k: 'day' }>, attempt = 1) {
 	const db = env.DB;
 	const q = m.since
 		? db.prepare('SELECT hex FROM candidates WHERE added_at > ? AND added_at <= ?').bind(m.since, m.snapshot)
@@ -158,6 +160,9 @@ async function processDay(env: Env, m: Extract<Msg, { k: 'day' }>) {
 		if (!urls.length) throw new Error(`archive for ${m.day} not found`);
 		const s = dayStart(m.day);
 		const rows: Record<string, unknown>[] = [];
+		const t0 = Date.now();
+		let nextMark = 500e6;
+		const marks: Promise<void>[] = [];
 		const res = await extractDay(urls, hexes, (hex, c) => {
 			// only points inside this UTC day; neighbouring days carry their own
 			const pts = [...new Map(c.pts.filter((p) => p[0] >= s && p[0] < s + 86400).map((p) => [p[0], p] as [number, Pt])).values()].sort(
@@ -165,7 +170,13 @@ async function processDay(env: Env, m: Extract<Msg, { k: 'day' }>) {
 			);
 			const rec = dayRecord(pts, ap(), c.cs);
 			if (rec) rows.push({ hex, day: m.day, data: JSON.stringify({ ...rec, r: c.r, t: c.t }) });
+		}, (total) => {
+			if (total < nextMark) return;
+			nextMark += 500e6;
+			const secs = (Date.now() - t0) / 1000;
+			marks.push(jobLog(env, m, attempt, 'progress', secs, `${(total / 1e9).toFixed(1)} GB, ${(total / 1e6 / secs).toFixed(1)} MB/s, ${rows.length} aircraft`));
 		});
+		await Promise.all(marks);
 		if (!res.seen) throw new Error(`archive for ${m.day} had no traces`);
 		seen = res.seen;
 		kept = rows.length;
@@ -184,11 +195,30 @@ async function processDay(env: Env, m: Extract<Msg, { k: 'day' }>) {
 async function dayFinished(env: Env, run: number, failed: boolean) {
 	const r = await env.DB
 		.prepare(
-			`UPDATE refresh_runs SET days_pending = days_pending - 1, days_failed = days_failed + ? WHERE id = ? RETURNING days_pending`
+			`UPDATE refresh_runs SET days_pending = days_pending - 1, days_failed = days_failed + ? WHERE id = ?
+			 RETURNING days_pending, days_total`
 		)
 		.bind(failed ? 1 : 0, run)
-		.first<{ days_pending: number }>();
-	if (r && r.days_pending === 0) await startScoring(env, run);
+		.first<{ days_pending: number; days_total: number }>();
+	if (!r) return;
+	if (r.days_pending === 0) await startScoring(env, run);
+	else if ((r.days_total - r.days_pending) % INTERIM_EVERY === 0) await startInterimScoring(env, run);
+}
+
+/**
+ * Partial results mid-download, only for aircraft that have no complete results yet (newly added
+ * ones): complete results are never replaced by partial ones. Rows are marked scores.partial = 1.
+ */
+async function startInterimScoring(env: Env, run: number) {
+	const hexes = (
+		await env.DB.prepare(
+			`SELECT hex FROM candidates WHERE hex NOT IN (SELECT hex FROM scores WHERE partial = 0) ORDER BY hex`
+		).all<{ hex: string }>()
+	).results.map((r) => r.hex);
+	const msgs: { body: Msg }[] = [];
+	for (let i = 0; i < hexes.length; i += SCORE_SLICE)
+		msgs.push({ body: { k: 'score', run, offset: 0, limit: 0, hexes: hexes.slice(i, i + SCORE_SLICE), interim: true } });
+	for (let i = 0; i < msgs.length; i += 100) await env.QUEUE.sendBatch(msgs.slice(i, i + 100));
 }
 
 // ---------------------------------------------------------------- score
@@ -206,11 +236,17 @@ async function startScoring(env: Env, run: number) {
 
 async function scoreSlice(env: Env, m: Extract<Msg, { k: 'score' }>) {
 	const db = env.DB;
-	const run = await db.prepare('SELECT window_start, window_end FROM refresh_runs WHERE id = ?').bind(m.run).first<{ window_start: string; window_end: string }>();
+	const run = await db
+		.prepare('SELECT window_start, window_end, status FROM refresh_runs WHERE id = ?')
+		.bind(m.run)
+		.first<{ window_start: string; window_end: string; status: string }>();
 	if (!run) return;
-	const hexes = (await db.prepare('SELECT hex FROM candidates ORDER BY hex LIMIT ? OFFSET ?').bind(m.limit, m.offset).all<{ hex: string }>()).results.map(
-		(r) => r.hex
-	);
+	if (m.interim && run.status !== 'downloading') return; // final scoring has started; it covers these
+	const hexes =
+		m.hexes ??
+		(await db.prepare('SELECT hex FROM candidates ORDER BY hex LIMIT ? OFFSET ?').bind(m.limit, m.offset).all<{ hex: string }>()).results.map(
+			(r) => r.hex
+		);
 	if (!hexes.length) return;
 	const hexJson = JSON.stringify(hexes);
 	const [items, days] = await Promise.all([
@@ -241,7 +277,7 @@ async function scoreSlice(env: Env, m: Extract<Msg, { k: 'score' }>) {
 		recs.sort((a, b) => (a.day < b.day ? -1 : 1));
 		const { score: s, nights, landings: lands } = scoreFromRecords(hex, recs.map((x) => x.rec), ap(), wStart, wEnd, fetched);
 		const last = recs[recs.length - 1].rec;
-		scores.push({ ...s, adsb_registration: last.r ?? null, adsb_type: last.t ?? null });
+		scores.push({ ...s, adsb_registration: last.r ?? null, adsb_type: last.t ?? null, partial: m.interim ? 1 : 0 });
 		for (const [night, a] of nights) {
 			overnights.push({ hex, night, airport: a.ident, in_region: a.region ? 1 : 0 });
 			useAirport(a);
@@ -261,6 +297,11 @@ async function scoreSlice(env: Env, m: Extract<Msg, { k: 'score' }>) {
 		for (const [callsign, e] of cs) callsigns.push({ hex, callsign, ...e });
 	}
 
+	if (m.interim) {
+		// re-check right before writing: never overwrite results from the final pass
+		const st = await db.prepare('SELECT status FROM refresh_runs WHERE id = ?').bind(m.run).first<{ status: string }>();
+		if (st?.status !== 'downloading') return;
+	}
 	const del = (t: string) => db.prepare(`DELETE FROM ${t} WHERE hex IN (SELECT value FROM json_each(?))`).bind(hexJson);
 	await db.batch([
 		del('scores'),
@@ -272,7 +313,7 @@ async function scoreSlice(env: Env, m: Extract<Msg, { k: 'score' }>) {
 			db,
 			'scores',
 			['hex', 'first_seen', 'last_seen', 'adsb_registration', 'adsb_type', 'top_airport', 'top_airport_share', 'nights_observed',
-				'nights_in_region', 'region_share', 'landings_in_region', 'landings_total', 'top_region_airport'],
+				'nights_in_region', 'region_share', 'landings_in_region', 'landings_total', 'top_region_airport', 'partial'],
 			scores
 		),
 		...upsertStmts(db, 'overnights', ['hex', 'night', 'airport', 'in_region'], overnights),
@@ -343,7 +384,7 @@ async function refreshPart135(env: Env) {
 // ---------------------------------------------------------------- job log
 
 let logReady = false;
-async function jobLog(env: Env, m: Msg, attempt: number, event: 'start' | 'done' | 'error', secs?: number, detail = '') {
+async function jobLog(env: Env, m: Msg, attempt: number, event: 'start' | 'done' | 'error' | 'progress', secs?: number, detail = '') {
 	try {
 		if (!logReady) {
 			await env.DB.prepare(
@@ -379,11 +420,11 @@ export default {
 			try {
 				if (m.k === 'plan') await plan(env, m.trigger);
 				else if (m.k === 'day') {
-					await processDay(env, m);
+					await processDay(env, m, msg.attempts);
 					await dayFinished(env, m.run, false);
 				} else if (m.k === 'score') {
 					await scoreSlice(env, m);
-					await sliceFinished(env, m.run);
+					if (!m.interim) await sliceFinished(env, m.run);
 				} else if (m.k === 'part135') await refreshPart135(env);
 				if (m.k !== 'score') await jobLog(env, m, msg.attempts, 'done', (Date.now() - t0) / 1000);
 				msg.ack();
@@ -394,7 +435,7 @@ export default {
 				else {
 					// give up on this job but keep the run moving
 					if (m.k === 'day') await dayFinished(env, m.run, true);
-					else if (m.k === 'score') await sliceFinished(env, m.run);
+					else if (m.k === 'score' && !m.interim) await sliceFinished(env, m.run);
 					msg.ack();
 				}
 			}

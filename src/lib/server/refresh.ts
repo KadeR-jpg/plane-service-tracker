@@ -30,3 +30,28 @@ export async function latestRefresh(db: D1Database): Promise<RefreshRun | null> 
 		return null; // table missing before migration 0004
 	}
 }
+
+export interface RefreshProgress {
+	running: boolean;
+	phase: 'downloading' | 'scoring' | null;
+	daysDone: number;
+	daysTotal: number;
+	/** rough minutes until the run is done; null when unknown */
+	etaMin: number | null;
+}
+
+/** Progress and a rough time estimate from the download rate so far. */
+export function refreshProgress(r: RefreshRun | null, nowMs = Date.now()): RefreshProgress {
+	const running = !!r && (r.status === 'downloading' || r.status === 'scoring');
+	if (!r || !running) return { running: false, phase: null, daysDone: r?.days_total ?? 0, daysTotal: r?.days_total ?? 0, etaMin: null };
+	const done = r.days_total - r.days_pending;
+	let eta: number | null = null;
+	if (r.status === 'scoring') eta = 5;
+	else if (done > 0) {
+		const elapsedMin = (nowMs - Date.parse(r.started_at)) / 60000;
+		eta = Math.round((r.days_pending * elapsedMin) / done + 5);
+	}
+	return { running, phase: r.status as 'downloading' | 'scoring', daysDone: done, daysTotal: r.days_total, etaMin: eta };
+}
+
+export { etaText } from '$lib/eta';

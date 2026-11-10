@@ -30,7 +30,8 @@ export async function partUrls(day: string): Promise<string[]> {
 	return urls;
 }
 
-async function* concatParts(urls: string[]): AsyncGenerator<Uint8Array> {
+async function* concatParts(urls: string[], onBytes?: (total: number) => void): AsyncGenerator<Uint8Array> {
+	let total = 0;
 	for (const url of urls) {
 		const res = await fetch(url);
 		if (!res.ok || !res.body) throw new Error(`${url}: HTTP ${res.status}`);
@@ -38,6 +39,8 @@ async function* concatParts(urls: string[]): AsyncGenerator<Uint8Array> {
 		for (;;) {
 			const { value, done } = await reader.read();
 			if (done) break;
+			total += value.length;
+			onBytes?.(total);
 			yield value;
 		}
 	}
@@ -115,7 +118,8 @@ export function compact(d: RawTrace): CompactTrace {
 export async function extractDay(
 	urls: string[],
 	hexes: Set<string>,
-	onTrace: (hex: string, trace: CompactTrace) => void | Promise<void>
+	onTrace: (hex: string, trace: CompactTrace) => void | Promise<void>,
+	onBytes?: (total: number) => void
 ): Promise<{ seen: number; kept: number }> {
 	let seen = 0,
 		kept = 0;
@@ -126,7 +130,7 @@ export async function extractDay(
 		return hexes.has(m[1]);
 	};
 	const dec = new TextDecoder();
-	for await (const entry of tarEntries(concatParts(urls), want)) {
+	for await (const entry of tarEntries(concatParts(urls, onBytes), want)) {
 		const hex = TRACE_RE.exec(entry.name)![1];
 		const c = compact(JSON.parse(dec.decode(await gunzip(entry.data))) as RawTrace);
 		if (!c.pts.length) continue;

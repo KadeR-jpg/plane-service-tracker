@@ -80,7 +80,7 @@
 					{#each cols as c}
 						<td class:num={c.num} class:mono={c.k === 'hex' || c.k === 'top_airport'}>
 							{#if c.k === 'registration'}
-								<a href="/aircraft/{r.hex}">{r.registration || '—'}</a>
+								<a href="/aircraft/{r.hex}">{r.registration || '—'}</a>{#if r.partial} <span class="pill warn" title="Partial results while the refresh is running">partial</span>{/if}
 							{:else}
 								{fmt(c.k, r[c.k])}
 							{/if}

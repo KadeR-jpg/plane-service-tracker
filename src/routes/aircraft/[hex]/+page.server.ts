@@ -3,6 +3,7 @@ import { isTrustee, STATUSES } from '$lib/research';
 
 type FleetRow = { hex: string; registration: string; model: string; top_airport: string | null; region_share: number | null };
 import { db } from '$lib/server/db';
+import { latestRefresh, refreshProgress } from '$lib/server/refresh';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ platform, params }) => {
@@ -12,7 +13,7 @@ export const load: PageServerLoad = async ({ platform, params }) => {
 		.prepare(
 			`SELECT c.*, s.first_seen, s.last_seen, s.adsb_registration, s.adsb_type, s.top_airport,
 			        s.top_airport_share, s.nights_observed, s.nights_in_region, s.region_share,
-			        s.landings_in_region, s.landings_total
+			        s.landings_in_region, s.landings_total, s.partial
 			   FROM candidates c LEFT JOIN scores s ON s.hex = c.hex WHERE c.hex = ?`
 		)
 		.bind(hex)
@@ -74,6 +75,7 @@ export const load: PageServerLoad = async ({ platform, params }) => {
 	]);
 	return {
 		candidate,
+		progress: refreshProgress(await latestRefresh(d)),
 		nights: nights.results,
 		landings: landings.results,
 		run,

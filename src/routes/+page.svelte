@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Glossary from '$lib/Glossary.svelte';
 	import Th from '$lib/Th.svelte';
+	import { etaText } from '$lib/eta';
 	let { data } = $props();
 	const pct = (x: number) => `${Math.round(x * 100)}%`;
 	const q = $derived(`minShare=${data.minShare}&minNights=${data.minNights}`);
@@ -19,6 +20,17 @@
 		No ingest run yet.
 	{/if}
 </p>
+
+{#if data.progress.running}
+	<p class="card banner">
+		<strong>Flight history is updating</strong>
+		({data.progress.phase === 'scoring' ? 'recalculating scores' : `${data.progress.daysDone} of ${data.progress.daysTotal} days downloaded`}),
+		finishing {etaText(data.progress.etaMin)}.
+		{#if data.partialCount}{data.partialCount} newly added aircraft show partial results so far.{/if}
+		{#if data.missingCount}{data.missingCount} aircraft have no history yet; they fill in as days download.{/if}
+		<a href="/candidates">Details</a>
+	</p>
+{/if}
 
 <div class="stats">
 	<div class="card stat"><div class="v">{data.totals.candidates}</div><div class="l">Candidates</div></div>
