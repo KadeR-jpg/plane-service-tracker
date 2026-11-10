@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { tick } from 'svelte';
+	import { invalidateAll } from '$app/navigation';
+	import { onMount, tick } from 'svelte';
 	import {
 		candidatesFromCsvRows,
 		candidatesFromWords,
@@ -12,6 +13,24 @@
 	import { parseCsv } from '$lib/csv';
 
 	let { data, form } = $props();
+
+	// refresh status: poll while a run is in progress (or was just requested)
+	const running = $derived(data.refresh?.status === 'downloading' || data.refresh?.status === 'scoring');
+	onMount(() => {
+		const id = setInterval(() => {
+			if (running || form?.refreshRequested || form?.refreshing) invalidateAll();
+		}, 15000);
+		return () => clearInterval(id);
+	});
+	const fmtTime = (iso: string | null | undefined) =>
+		iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+	const progress = $derived.by(() => {
+		const r = data.refresh;
+		if (!r) return 0;
+		if (r.status === 'downloading') return r.days_total ? (r.days_total - r.days_pending) / r.days_total : 0;
+		if (r.status === 'scoring') return r.score_total ? (r.score_total - r.score_pending) / r.score_total : 0;
+		return 1;
+	});
 
 	// FAA registry upload: the zip is read in the browser; only candidate rows are sent
 	let faaStatus = $state('');
@@ -128,6 +147,35 @@
 <h1>Data</h1>
 
 <div class="card" style="margin-bottom:1rem">
+	<h2 style="margin-top:0">Flight history</h2>
+	<p class="muted">
+		Updates automatically every night, and right after you add aircraft. Each run downloads any new days of
+		ADS-B history (and history for newly added aircraft), then recalculates every score.
+	</p>
+	{#if data.refresh}
+		{@const r = data.refresh}
+		{#if r.status === 'downloading'}
+			<p><strong>Downloading history:</strong> {r.days_total - r.days_pending} of {r.days_total} days ({r.trigger === 'upload' ? 'started by a list upload' : r.trigger === 'manual' ? 'started manually' : 'nightly'}, {fmtTime(r.started_at)})</p>
+		{:else if r.status === 'scoring'}
+			<p><strong>Recalculating scores:</strong> {r.score_total - r.score_pending} of {r.score_total} batches</p>
+		{:else if r.status === 'done'}
+			<p><strong>Up to date</strong> as of {fmtTime(r.finished_at)}: history {r.window_start} to {r.window_end}.</p>
+		{:else}
+			<p class="error">Last refresh failed ({fmtTime(r.started_at)}): {r.message}</p>
+		{/if}
+		{#if running}<div class="progress"><span style="width:{Math.round(progress * 100)}%"></span></div>{/if}
+		{#if r.message && r.status === 'done'}<p class="muted">{r.message}</p>{/if}
+	{:else}
+		<p>No refresh has run yet.</p>
+	{/if}
+	<form method="POST" action="?/refresh" use:enhance class="inline">
+		<button disabled={running}>{running ? 'Refresh running…' : 'Refresh now'}</button>
+		{#if form?.refreshRequested}<span class="ok">Refresh requested; it starts within a minute.</span>{/if}
+		{#if form?.refreshError}<span class="error">{form.refreshError}</span>{/if}
+	</form>
+</div>
+
+<div class="card" style="margin-bottom:1rem">
 	<h2 style="margin-top:0">FAA registry (owner addresses)</h2>
 	<p class="muted">
 		{#if data.faa?.n}
@@ -169,7 +217,7 @@
 <h2>Candidate list</h2>
 <p class="muted">
 	{data.count} aircraft{data.uploadedAt ? `, last updated ${data.uploadedAt.slice(0, 16).replace('T', ' ')} UTC` : ''}.
-	Flight history is only downloaded for aircraft on this list, so after adding aircraft ask for a data refresh.
+	Flight history is downloaded for aircraft on this list; adding aircraft starts that automatically.
 </p>
 
 <div class="card">
@@ -220,7 +268,11 @@
 		</form>
 	{/if}
 	{#if form?.error}<p class="error">{form.error}</p>{/if}
-	{#if form?.added !== undefined}<p class="ok">Added {form.added} aircraft, updated {form.updated}.</p>{/if}
+	{#if form?.added !== undefined}
+		<p class="ok">
+			Added {form.added} aircraft, updated {form.updated}.{form.refreshing ? ' Downloading their flight history now; see Flight history above.' : ''}
+		</p>
+	{/if}
 </div>
 
 <h2>Remove aircraft</h2>
@@ -269,6 +321,8 @@
 </div>
 
 <style>
+	.progress { height: 6px; background: var(--night-none); border-radius: 3px; overflow: hidden; margin: 0.25rem 0 0.75rem; max-width: 420px; }
+	.progress span { display: block; height: 100%; background: var(--accent); transition: width 0.5s; }
 	.list { max-height: 70vh; overflow: auto; }
 	tr.sel td { background: var(--accent-soft); }
 </style>

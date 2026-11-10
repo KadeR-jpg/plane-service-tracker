@@ -1,11 +1,12 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { Airports } from './airports.ts';
-import { scoreAircraft, type Pt } from './analyze.ts';
-import { epochAtLocal, localDate } from './tz.ts';
+import { loadAirports } from './airports.ts';
+import type { Airports } from '../../src/lib/ingest/airports.ts';
+import { scoreAircraft, type Pt } from '../../src/lib/ingest/analyze.ts';
+import { epochAtLocal, localDate } from '../../src/lib/ingest/tz.ts';
 
 let ap: Airports;
 beforeAll(async () => {
-	ap = await Airports.load('data');
+	ap = await loadAirports('data');
 }, 60_000);
 
 const T = (iso: string) => Date.parse(iso) / 1000;

@@ -5,6 +5,8 @@
 	"compatibility_date": "2026-10-01",
 	"compatibility_flags": ["nodejs_als"],
 	"assets": { "binding": "ASSETS", "directory": ".svelte-kit/cloudflare" },
+	// background refresh worker (workers/ingest) listens on this queue
+	"queues": { "producers": [{ "binding": "REFRESH_QUEUE", "queue": "plane-service-refresh" }] },
 	"d1_databases": [
 		{
 			"binding": "DB",

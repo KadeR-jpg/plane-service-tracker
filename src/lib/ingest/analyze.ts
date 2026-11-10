@@ -13,8 +13,8 @@
  *  - Night D is assigned to X if a stay at X covers 03:00 local (airport tz) on D+1, and the UTC
  *    day containing that 03:00 was fetched (missing archive days never produce nights).
  */
-import { Airports, nm, type Airport } from './airports.ts';
-import { addDays, epochAtLocal, localDate } from './tz.ts';
+import { Airports, nm, type Airport } from './airports';
+import { addDays, epochAtLocal, localDate } from './tz';
 
 /** [epoch_s, lat, lon, alt_ft | "ground" | null, gs_kt | null] */
 export type Pt = [number, number, number, number | 'ground' | null, number | null];
@@ -31,7 +31,7 @@ export function isGround(p: Pt): boolean {
 	return gs != null && gs < 40 && (alt == null || alt < 15000);
 }
 
-type Item =
+export type Item =
 	| { k: 'at'; t: number; a: Airport; inferred: boolean }
 	| { k: 'air'; t: number; lat: number; lon: number };
 
@@ -54,7 +54,7 @@ const RANK_PENALTY_NM = [0, 1.5, 4];
 /** Inferred landings/departures only at fields a large-cabin jet uses: paved runway >= 5000 ft. */
 export const INFERRED_MIN_PAVED_FT = 5000;
 
-function snapLowAirborne(ap: Airports, lat: number, lon: number, alt: Pt[3]): Airport | null {
+export function snapLowAirborne(ap: Airports, lat: number, lon: number, alt: Pt[3]): Airport | null {
 	if (typeof alt !== 'number') return null;
 	let best: Airport | null = null;
 	let bestScore = Infinity;
@@ -71,22 +71,28 @@ function snapLowAirborne(ap: Airports, lat: number, lon: number, alt: Pt[3]): Ai
 	return best;
 }
 
+/** Inferred landing / departure items for a coverage gap between consecutive points prev -> p. */
+export function gapItems(prev: Pt, p: Pt, ap: Airports): Item[] {
+	const out: Item[] = [];
+	if (p[0] - prev[0] <= GAP_S) return out;
+	if (!isGround(prev)) {
+		const a = snapLowAirborne(ap, prev[1], prev[2], prev[3]);
+		if (a) out.push({ k: 'at', t: prev[0] + 1, a, inferred: true });
+	}
+	if (!isGround(p)) {
+		const a = snapLowAirborne(ap, p[1], p[2], p[3]);
+		if (a) out.push({ k: 'at', t: p[0] - 1, a, inferred: true });
+	}
+	return out;
+}
+
 export function buildItems(pts: Pt[], ap: Airports): Item[] {
 	const items: Item[] = [];
 	let prev: Pt | null = null;
 	for (const p of pts) {
-		const [t, lat, lon, alt] = p;
+		const [t, lat, lon] = p;
 		const g = isGround(p);
-		if (prev && t - prev[0] > GAP_S) {
-			if (!isGround(prev)) {
-				const a = snapLowAirborne(ap, prev[1], prev[2], prev[3]);
-				if (a) items.push({ k: 'at', t: prev[0] + 1, a, inferred: true });
-			}
-			if (!g) {
-				const a = snapLowAirborne(ap, lat, lon, alt);
-				if (a) items.push({ k: 'at', t: t - 1, a, inferred: true });
-			}
-		}
+		if (prev) for (const x of gapItems(prev, p, ap)) items.push(x);
 		if (g) {
 			const a = snapGround(ap, lat, lon);
 			if (a) items.push({ k: 'at', t, a, inferred: false });
@@ -193,7 +199,21 @@ export function scoreAircraft(
 	const byT = new Map<number, Pt>();
 	for (const p of rawPts) byT.set(p[0], p);
 	const pts = [...byT.values()].sort((a, b) => a[0] - b[0]);
-	const stays = buildStays(buildItems(pts, ap), wStart, wEnd);
+	return scoreItems(hex, buildItems(pts, ap), pts.length ? pts[0][0] : null, pts.length ? pts[pts.length - 1][0] : null, ap, wStart, wEnd, fetchedDays);
+}
+
+/** Score from an item list (raw-point path above, or joined day records). */
+export function scoreItems(
+	hex: string,
+	items: Item[],
+	firstT: number | null,
+	lastT: number | null,
+	ap: Airports,
+	wStart: number,
+	wEnd: number,
+	fetchedDays?: Set<string>
+) {
+	const stays = buildStays(items, wStart, wEnd);
 	const nights = nightsFromStays(stays, ap, wStart, wEnd, fetchedDays);
 	const landings = stays.filter((s) => s.landing);
 	const cnt = new Map<string, number>();
@@ -209,8 +229,8 @@ export function scoreAircraft(
 	const round = (x: number) => Math.round(x * 1000) / 1000;
 	const score: Score = {
 		hex,
-		first_seen: pts.length ? day(pts[0][0]) : '',
-		last_seen: pts.length ? day(pts[pts.length - 1][0]) : '',
+		first_seen: firstT != null ? day(firstT) : '',
+		last_seen: lastT != null ? day(lastT) : '',
 		top_airport: top?.[0] ?? null,
 		top_airport_share: top ? round(top[1] / nights.size) : 0,
 		nights_observed: nights.size,

@@ -1,0 +1,33 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "plane-service-ingest",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	// Workers Paid: a day archive is 3-4 GB of streaming and parsing
+	"limits": { "cpu_ms": 300000 },
+	"triggers": {
+		// 11:17 UTC daily (archives for the previous day are published around 03:30 UTC)
+		"crons": ["17 11 * * *"]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "plane-service-tracker",
+			"database_id": "1cb5768d-98ac-4ad3-a147-4705692ba8f6",
+			"migrations_dir": "../../migrations"
+		}
+	],
+	"queues": {
+		"producers": [{ "binding": "QUEUE", "queue": "plane-service-refresh" }],
+		"consumers": [
+			{
+				"queue": "plane-service-refresh",
+				"max_batch_size": 1,
+				"max_batch_timeout": 5,
+				"max_concurrency": 6,
+				"max_retries": 3
+			}
+		]
+	},
+	"observability": { "enabled": true }
+}

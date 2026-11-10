@@ -1,6 +1,7 @@
 import { fail } from '@sveltejs/kit';
 import { normalizeCandidates, type Field } from '$lib/candidates';
 import { db } from '$lib/server/db';
+import { latestRefresh, requestRefresh } from '$lib/server/refresh';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ platform }) => {
@@ -19,6 +20,7 @@ export const load: PageServerLoad = async ({ platform }) => {
 		.first<{ n: number; loaded: string | null; prior: number }>();
 	const p135 = await d.prepare('SELECT COUNT(*) AS n, MAX(list_date) AS loaded FROM part135').first<{ n: number; loaded: string | null }>();
 	return {
+		refresh: await latestRefresh(d),
 		count: stats?.n ?? 0,
 		uploadedAt: stats?.uploaded_at ?? null,
 		list: list.results,
@@ -80,10 +82,10 @@ export const actions: Actions = {
 				d
 					.prepare(
 						// blank cells in the new file keep the value already stored
-						`INSERT INTO candidates (hex, registration, model, registered_owner, owner_city, owner_state, uploaded_at)
+						`INSERT INTO candidates (hex, registration, model, registered_owner, owner_city, owner_state, uploaded_at, added_at)
 						 SELECT json_extract(value, '$.hex'), json_extract(value, '$.registration'), json_extract(value, '$.model'),
 						        json_extract(value, '$.registered_owner'), json_extract(value, '$.owner_city'),
-						        json_extract(value, '$.owner_state'), ?2
+						        json_extract(value, '$.owner_state'), ?2, ?2
 						   FROM json_each(?1) WHERE true
 						 ON CONFLICT (hex) DO UPDATE SET
 						   registration = COALESCE(NULLIF(excluded.registration, ''), registration),
@@ -97,7 +99,15 @@ export const actions: Actions = {
 			);
 		await d.batch(stmts);
 		const added = rows.filter((r) => !existing.has(r.hex)).length;
-		return { added, updated: rows.length - added };
+		// new aircraft need flight history: start a background refresh right away
+		const refreshing = added > 0 && (await requestRefresh(platform, 'upload'));
+		return { added, updated: rows.length - added, refreshing };
+	},
+
+	refresh: async ({ platform, locals }) => {
+		if (!locals.user) return fail(403, { refreshError: 'Sign in first.' });
+		if (!(await requestRefresh(platform, 'manual'))) return fail(500, { refreshError: 'The refresh worker is not connected.' });
+		return { refreshRequested: true };
 	},
 
 	/** Explicit removal of selected aircraft. Their saved notes stay and return if the aircraft is added again. */

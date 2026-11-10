@@ -18,12 +18,12 @@ import { parseArgs } from 'node:util';
 import { readSheet } from 'read-excel-file/node';
 import { candidatesFromCsvRows, cellsToStrings, normalizeCandidates } from '../../src/lib/candidates.ts';
 import { parseCsv } from '../../src/lib/csv.ts';
-import { Airports } from './airports.ts';
-import { scoreAircraft, type Pt } from './analyze.ts';
+import { loadAirports } from './airports.ts';
+import { scoreAircraft, type Pt } from '../../src/lib/ingest/analyze.ts';
 import { executeFile, inserts, query, type Target } from './d1.ts';
 import { loadPart135, readRegistryZip } from './enrich.ts';
 import { availableDays, dayDone, fetchDay, log } from './fetch.ts';
-import { addDays } from './tz.ts';
+import { addDays } from '../../src/lib/ingest/tz.ts';
 
 const { values: opt, positionals } = parseArgs({
 	allowPositionals: true,
@@ -103,7 +103,7 @@ async function cmdScore(hexes: Set<string>) {
 	const wStart = Date.parse(`${use[0]}T00:00:00Z`) / 1000;
 	const wEnd = Date.parse(`${addDays(use.at(-1)!, 1)}T00:00:00Z`) / 1000;
 
-	const ap = await Airports.load(opt.data);
+	const ap = await loadAirports(opt.data);
 	// index only (hex -> days); traces are loaded one aircraft at a time to bound memory
 	const daysByHex = new Map<string, string[]>();
 	for (const day of use)
@@ -209,8 +209,8 @@ async function cmdImportCandidates(file: string | undefined) {
 		', uploaded_at = excluded.uploaded_at;';
 	const sql = inserts(
 		'candidates',
-		['hex', 'registration', 'model', 'registered_owner', 'owner_city', 'owner_state', 'uploaded_at'],
-		rows.map((r) => [r.hex, r.registration, r.model, r.registered_owner, r.owner_city, r.owner_state, now])
+		['hex', 'registration', 'model', 'registered_owner', 'owner_city', 'owner_state', 'uploaded_at', 'added_at'],
+		rows.map((r) => [r.hex, r.registration, r.model, r.registered_owner, r.owner_city, r.owner_state, now, now])
 	)
 		.map((stmt) => stmt.replace(/;$/, upsert))
 		.join('\n');

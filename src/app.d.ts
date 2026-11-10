@@ -6,6 +6,7 @@ declare global {
 		interface Platform {
 			env: {
 				DB: D1Database;
+				REFRESH_QUEUE?: Queue<{ k: 'plan'; trigger: 'upload' | 'manual' }>;
 			};
 			ctx: ExecutionContext;
 			caches: CacheStorage & { default: Cache };
