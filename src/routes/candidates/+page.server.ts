@@ -8,10 +8,12 @@ export const load: PageServerLoad = async ({ platform }) => {
 	const stats = await d
 		.prepare('SELECT COUNT(*) AS n, MAX(uploaded_at) AS uploaded_at FROM candidates')
 		.first<{ n: number; uploaded_at: string | null }>();
-	const sample = await d
-		.prepare('SELECT * FROM candidates ORDER BY registration LIMIT 25')
-		.all<Record<string, string>>();
-	const regs = await d.prepare('SELECT registration FROM candidates').all<{ registration: string }>();
+	const list = await d
+		.prepare(
+			`SELECT hex, registration, model, registered_owner, owner_city, owner_state, uploaded_at
+			   FROM candidates ORDER BY registration`
+		)
+		.all<{ hex: string; registration: string; model: string; registered_owner: string; owner_city: string; owner_state: string; uploaded_at: string }>();
 	const faa = await d
 		.prepare('SELECT COUNT(*) AS n, MAX(file_date) AS loaded, (SELECT COUNT(*) FROM faa_prior) AS prior FROM faa_registry')
 		.first<{ n: number; loaded: string | null; prior: number }>();
@@ -19,8 +21,8 @@ export const load: PageServerLoad = async ({ platform }) => {
 	return {
 		count: stats?.n ?? 0,
 		uploadedAt: stats?.uploaded_at ?? null,
-		sample: sample.results,
-		registrations: regs.results.map((r) => r.registration.toUpperCase()),
+		list: list.results,
+		registrations: list.results.map((r) => r.registration.toUpperCase()),
 		faa,
 		p135
 	};
@@ -34,8 +36,11 @@ const REG_COLS = [
 ] as const;
 const PRIOR_COLS = ['registration', 'prior_registration', 'name', 'street', 'city', 'state', 'zip', 'cert_issue_date', 'cancel_date'] as const;
 
-/** INSERT ... SELECT from json_each(?): one bound parameter per chunk (D1 limits parameters per query). */
-function jsonInsert(d: D1Database, table: string, cols: readonly string[], rows: Record<string, unknown>[], extra: Record<string, string> = {}) {
+/**
+ * Insert-or-update from json_each(?): one bound parameter per chunk (D1 limits parameters per query).
+ * Rows already present are updated in place; nothing is ever deleted here.
+ */
+function jsonUpsert(d: D1Database, table: string, cols: readonly string[], rows: Record<string, unknown>[], extra: Record<string, string> = {}) {
 	const all = [...cols, ...Object.keys(extra)];
 	const sel = [...cols.map((c) => `COALESCE(json_extract(value, '$.${c}'), '')`), ...Object.keys(extra).map((_, i) => `?${i + 2}`)];
 	const out = [];
@@ -49,7 +54,8 @@ function jsonInsert(d: D1Database, table: string, cols: readonly string[], rows:
 }
 
 export const actions: Actions = {
-	save: async ({ request, platform, locals }) => {
+	/** Add new aircraft and update existing ones. Never removes anything. */
+	add: async ({ request, platform, locals }) => {
 		if (!locals.user) return fail(403, { error: 'Sign in first.' });
 		const form = await request.formData();
 
@@ -60,27 +66,56 @@ export const actions: Actions = {
 		} catch {
 			return fail(400, { error: 'Rows payload is not a JSON array.' });
 		}
-		const { rows, dropped } = normalizeCandidates(raw);
+		const { rows } = normalizeCandidates(raw);
 		if (!rows.length) return fail(400, { error: 'No rows with a valid 6-character hex.' });
 
 		const d = db(platform);
 		const now = new Date().toISOString();
-		// json_each keeps each statement to one bound parameter (D1 caps parameters per query)
-		const stmts = [d.prepare('DELETE FROM candidates')];
+		const existing = new Set(
+			(await d.prepare('SELECT hex FROM candidates').all<{ hex: string }>()).results.map((r) => r.hex)
+		);
+		const stmts = [];
 		for (let i = 0; i < rows.length; i += CHUNK)
 			stmts.push(
 				d
 					.prepare(
+						// blank cells in the new file keep the value already stored
 						`INSERT INTO candidates (hex, registration, model, registered_owner, owner_city, owner_state, uploaded_at)
 						 SELECT json_extract(value, '$.hex'), json_extract(value, '$.registration'), json_extract(value, '$.model'),
 						        json_extract(value, '$.registered_owner'), json_extract(value, '$.owner_city'),
 						        json_extract(value, '$.owner_state'), ?2
-						   FROM json_each(?1)`
+						   FROM json_each(?1) WHERE true
+						 ON CONFLICT (hex) DO UPDATE SET
+						   registration = COALESCE(NULLIF(excluded.registration, ''), registration),
+						   model = COALESCE(NULLIF(excluded.model, ''), model),
+						   registered_owner = COALESCE(NULLIF(excluded.registered_owner, ''), registered_owner),
+						   owner_city = COALESCE(NULLIF(excluded.owner_city, ''), owner_city),
+						   owner_state = COALESCE(NULLIF(excluded.owner_state, ''), owner_state),
+						   uploaded_at = excluded.uploaded_at`
 					)
 					.bind(JSON.stringify(rows.slice(i, i + CHUNK)), now)
 			);
 		await d.batch(stmts);
-		return { saved: rows.length, dropped };
+		const added = rows.filter((r) => !existing.has(r.hex)).length;
+		return { added, updated: rows.length - added };
+	},
+
+	/** Explicit removal of selected aircraft. Their saved notes stay and return if the aircraft is added again. */
+	remove: async ({ request, platform, locals }) => {
+		if (!locals.user) return fail(403, { removeError: 'Sign in first.' });
+		let hexes: string[];
+		try {
+			hexes = JSON.parse(String((await request.formData()).get('hexes') ?? '[]'));
+			if (!Array.isArray(hexes) || !hexes.every((h) => typeof h === 'string' && /^[0-9a-f]{6}$/.test(h))) throw new Error();
+		} catch {
+			return fail(400, { removeError: 'Nothing valid selected.' });
+		}
+		if (!hexes.length) return fail(400, { removeError: 'Nothing selected.' });
+		await db(platform)
+			.prepare('DELETE FROM candidates WHERE hex IN (SELECT value FROM json_each(?))')
+			.bind(JSON.stringify(hexes))
+			.run();
+		return { removed: hexes.length };
 	},
 
 	faa: async ({ request, platform, locals }) => {
@@ -95,11 +130,10 @@ export const actions: Actions = {
 		if (!payload.current.length) return fail(400, { faaError: 'No candidate aircraft were found in the registry file.' });
 		const d = db(platform);
 		const today = new Date().toISOString().slice(0, 10);
+		// updates rows for aircraft in the file; rows for other aircraft are left as they are
 		await d.batch([
-			d.prepare('DELETE FROM faa_registry'),
-			d.prepare('DELETE FROM faa_prior'),
-			...jsonInsert(d, 'faa_registry', REG_COLS, payload.current, { file_date: today }),
-			...jsonInsert(d, 'faa_prior', PRIOR_COLS, payload.prior)
+			...jsonUpsert(d, 'faa_registry', REG_COLS, payload.current, { file_date: today }),
+			...jsonUpsert(d, 'faa_prior', PRIOR_COLS, payload.prior)
 		]);
 		return { faaSaved: payload.current.length, faaPrior: payload.prior.length };
 	}

@@ -26,24 +26,25 @@ npm install
 npx wrangler login
 npx wrangler d1 create plane-service-tracker      # paste the database_id into wrangler.jsonc
 npm run db:migrate:remote
-npx wrangler secret put ADMIN_TOKEN               # required to replace the candidate list
 npm run deploy
 ```
 
 Local development:
 
 ```sh
-echo 'ADMIN_TOKEN=dev-token' > .dev.vars
 npm run db:migrate:local
 npm run build && npx wrangler dev                 # http://localhost:8787
 ```
 
 ## Workflow
 
-1. **Upload candidates.** On `/candidates`, choose `BSJC_FAA_ULR_LargeCabin_Candidate_List.pdf` or a CSV.
-   - The PDF is parsed in the browser with pdf.js. Columns are found by their header labels: Registration, Mode S hex, FAA model, Registered owner, Owner city, Owner state.
+0. **Create an account.** The first visit to a fresh deployment opens `/setup` to create the first account; that account adds others on `/account`. Every page requires sign-in.
+1. **Add candidates.** On **Data** (`/candidates`), choose an XLSX, CSV or PDF list.
+   - The file is parsed in the browser. Columns are found by their header labels: Registration, Mode S hex, FAA model, Registered owner, Owner city, Owner state.
    - Hex codes are lowercased and padded to 6 characters. Rows without a hex are dropped, and duplicates are removed.
-   - Check the preview, then save with the admin token.
+   - Uploading **adds** new aircraft and updates the details of ones already listed (blank cells keep the stored value). It never removes anything.
+   - Removing aircraft is a separate step: select rows in the list on the same page and click **Remove selected**. Saved notes for removed aircraft are kept and return if the aircraft is added again.
+   - CLI equivalent: `npm run ingest -- import-candidates list.xlsx` (also additive).
 2. **Ingest.** Run this from the repo on your machine:
    ```sh
    npm run ingest -- run --days 90            # remote D1 (add --local for wrangler dev)

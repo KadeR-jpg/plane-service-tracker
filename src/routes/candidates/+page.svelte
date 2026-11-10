@@ -59,6 +59,33 @@
 
 
 	let parsed = $state<Candidate[] | null>(null);
+	const onList = $derived(new Set(data.list.map((r) => r.hex)));
+	const newCount = $derived(parsed ? parsed.filter((r) => !onList.has(r.hex)).length : 0);
+
+	// explicit removal
+	let listFilter = $state('');
+	let selected = $state<Set<string>>(new Set());
+	const shown = $derived.by(() => {
+		const f = listFilter.trim().toLowerCase();
+		return f
+			? data.list.filter((r) =>
+					[r.registration, r.hex, r.model, r.registered_owner, r.owner_city, r.owner_state].join(' ').toLowerCase().includes(f)
+				)
+			: data.list;
+	});
+	const allShownSelected = $derived(shown.length > 0 && shown.every((r) => selected.has(r.hex)));
+	function toggle(hex: string) {
+		const s = new Set(selected);
+		if (s.has(hex)) s.delete(hex);
+		else s.add(hex);
+		selected = s;
+	}
+	function toggleShown() {
+		const s = new Set(selected);
+		if (allShownSelected) for (const r of shown) s.delete(r.hex);
+		else for (const r of shown) s.add(r.hex);
+		selected = s;
+	}
 	let info = $state('');
 	let parseError = $state('');
 	let busy = $state(false);
@@ -141,38 +168,41 @@
 
 <h2>Candidate list</h2>
 <p class="muted">
-	{data.count} aircraft in the list{data.uploadedAt ? `, uploaded ${data.uploadedAt.slice(0, 16).replace('T', ' ')} UTC` : ''}.
-	The ingest script only downloads history for these hex codes, so after replacing the list run
-	<code>npm run ingest -- run</code> again.
+	{data.count} aircraft{data.uploadedAt ? `, last updated ${data.uploadedAt.slice(0, 16).replace('T', ' ')} UTC` : ''}.
+	Flight history is only downloaded for aircraft on this list, so after adding aircraft ask for a data refresh.
 </p>
 
 <div class="card">
-	<h2 style="margin-top:0">Replace the list</h2>
+	<h2 style="margin-top:0">Add aircraft</h2>
 	<p class="muted">
-		Upload the BSJC candidate list as XLSX, PDF or CSV (first sheet of a workbook). Expected columns: Registration, Mode S hex,
-		FAA model, Registered owner, Owner city, Owner state. Hex codes are lowercased and padded to 6 characters; rows
-		without a hex are dropped. The file is parsed in your browser.
+		Upload a spreadsheet (XLSX, CSV or PDF). New aircraft are added; aircraft already on the list get their details
+		updated. <strong>Nothing is removed</strong>, so a file with only the missing aircraft is fine. Expected columns:
+		Registration, Mode S hex, FAA model, Registered owner, Owner city, Owner state. Rows without a hex are skipped.
 	</p>
 	<input type="file" accept=".xlsx,.pdf,.csv,text/csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onchange={onFile} disabled={busy} />
-	{#if busy}<p>Parsing…</p>{/if}
+	{#if busy}<p>Reading file…</p>{/if}
 	{#if parseError}<p class="error">{parseError}</p>{/if}
 	{#if info}<p>{info}</p>{/if}
 
 	{#if parsed?.length}
+		<p><strong>{newCount} new</strong> aircraft to add, {parsed.length - newCount} already on the list (details will be updated).</p>
 		<p class="muted">Preview (first 15 rows). Check the columns line up before saving.</p>
 		<div class="table-wrap">
 			<table>
-				<thead><tr>{#each FIELDS as f}<th>{f}</th>{/each}</tr></thead>
+				<thead><tr><th></th>{#each FIELDS as f}<th>{f}</th>{/each}</tr></thead>
 				<tbody>
 					{#each parsed.slice(0, 15) as r}
-						<tr>{#each FIELDS as f}<td class:mono={f === 'hex'}>{r[f]}</td>{/each}</tr>
+						<tr>
+							<td>{#if onList.has(r.hex)}<span class="muted">on list</span>{:else}<span class="pill good">new</span>{/if}</td>
+							{#each FIELDS as f}<td class:mono={f === 'hex'}>{r[f]}</td>{/each}
+						</tr>
 					{/each}
 				</tbody>
 			</table>
 		</div>
 		<form
 			method="POST"
-			action="?/save"
+			action="?/add"
 			class="inline"
 			style="margin-top:0.75rem"
 			use:enhance={() => {
@@ -186,23 +216,59 @@
 			}}
 		>
 			<input type="hidden" name="rows" value={JSON.stringify(parsed)} />
-			<button class="primary" disabled={saving}>Replace list with {parsed.length} aircraft</button>
+			<button class="primary" disabled={saving}>Add {newCount} new, update {parsed.length - newCount}</button>
 		</form>
 	{/if}
 	{#if form?.error}<p class="error">{form.error}</p>{/if}
-	{#if form?.saved}<p class="ok">Saved {form.saved} candidates.</p>{/if}
+	{#if form?.added !== undefined}<p class="ok">Added {form.added} aircraft, updated {form.updated}.</p>{/if}
 </div>
 
-{#if data.sample.length}
-	<h2>Current list (first 25 by registration)</h2>
-	<div class="table-wrap">
-		<table>
-			<thead><tr>{#each FIELDS as f}<th>{f}</th>{/each}</tr></thead>
-			<tbody>
-				{#each data.sample as r}
-					<tr>{#each FIELDS as f}<td class:mono={f === 'hex'}>{r[f]}</td>{/each}</tr>
-				{/each}
-			</tbody>
-		</table>
-	</div>
-{/if}
+<h2>Remove aircraft</h2>
+<p class="muted">
+	Select aircraft and click Remove. Removed aircraft disappear from all pages; their notes are kept and come back if
+	the aircraft is added again.
+</p>
+<div class="inline" style="margin-bottom:0.5rem; display:flex; gap:0.75rem; align-items:end; flex-wrap:wrap">
+	<label>Filter <input bind:value={listFilter} placeholder="registration, owner, model…" /></label>
+	<span class="muted">{shown.length} shown · {selected.size} selected</span>
+	<form
+		method="POST"
+		action="?/remove"
+		use:enhance={({ cancel }) => {
+			if (!confirm(`Remove ${selected.size} aircraft from the list?`)) return cancel();
+			return async ({ update }) => {
+				await update();
+				selected = new Set();
+			};
+		}}
+	>
+		<input type="hidden" name="hexes" value={JSON.stringify([...selected])} />
+		<button disabled={!selected.size}>Remove {selected.size || ''} selected</button>
+	</form>
+	{#if selected.size}<button type="button" onclick={() => (selected = new Set())}>Clear selection</button>{/if}
+</div>
+{#if form?.removed}<p class="ok">Removed {form.removed} aircraft.</p>{/if}
+{#if form?.removeError}<p class="error">{form.removeError}</p>{/if}
+<div class="table-wrap list">
+	<table>
+		<thead>
+			<tr>
+				<th><input type="checkbox" checked={allShownSelected} onchange={toggleShown} aria-label="Select all shown" /></th>
+				{#each FIELDS as f}<th>{f}</th>{/each}
+			</tr>
+		</thead>
+		<tbody>
+			{#each shown as r (r.hex)}
+				<tr class:sel={selected.has(r.hex)}>
+					<td><input type="checkbox" checked={selected.has(r.hex)} onchange={() => toggle(r.hex)} aria-label="Select {r.registration}" /></td>
+					{#each FIELDS as f}<td class:mono={f === 'hex'}>{r[f]}</td>{/each}
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+</div>
+
+<style>
+	.list { max-height: 70vh; overflow: auto; }
+	tr.sel td { background: var(--accent-soft); }
+</style>

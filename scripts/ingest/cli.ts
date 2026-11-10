@@ -4,7 +4,7 @@
  *   npm run ingest -- fetch [--days 90] [--end YYYY-MM-DD] [--local]
  *   npm run ingest -- score [--local] [--dry-run]
  *   npm run ingest -- run   [--days 90] [--local]          (fetch + score)
- *   npm run ingest -- import-candidates <file.xlsx|csv> [--local]   (replace the candidate list)
+ *   npm run ingest -- import-candidates <file.xlsx|csv> [--local]   (add new aircraft / update existing; removes nothing)
  *   npm run ingest -- enrich [--faa ReleasableAircraft.zip] [--part135 file.xlsx] [--local]
  *       Part 135 operators (downloaded from faa.gov unless --part135 is given) and, with --faa, the FAA
  *       registry (full owner address, co-owners, earlier owners). Download the zip in a browser from
@@ -200,14 +200,20 @@ async function cmdImportCandidates(file: string | undefined) {
 	const { rows, dropped, duplicates } = await readCandidateFile(file);
 	if (!rows.length) throw new Error('no rows with a valid hex (check the header row)');
 	const now = new Date().toISOString();
-	const sql = [
-		'DELETE FROM candidates;',
-		...inserts(
-			'candidates',
-			['hex', 'registration', 'model', 'registered_owner', 'owner_city', 'owner_state', 'uploaded_at'],
-			rows.map((r) => [r.hex, r.registration, r.model, r.registered_owner, r.owner_city, r.owner_state, now])
-		)
-	].join('\n');
+	// add new aircraft, update existing ones (blank cells keep the stored value); never deletes
+	const upsert =
+		' ON CONFLICT (hex) DO UPDATE SET' +
+		['registration', 'model', 'registered_owner', 'owner_city', 'owner_state']
+			.map((c) => ` ${c} = COALESCE(NULLIF(excluded.${c}, ''), ${c})`)
+			.join(',') +
+		', uploaded_at = excluded.uploaded_at;';
+	const sql = inserts(
+		'candidates',
+		['hex', 'registration', 'model', 'registered_owner', 'owner_city', 'owner_state', 'uploaded_at'],
+		rows.map((r) => [r.hex, r.registration, r.model, r.registered_owner, r.owner_city, r.owner_state, now])
+	)
+		.map((stmt) => stmt.replace(/;$/, upsert))
+		.join('\n');
 	mkdirSync('ingest-out', { recursive: true });
 	writeFileSync('ingest-out/candidates.sql', sql + '\n');
 	log(`import-candidates: ${rows.length} candidates (${dropped} without hex dropped, ${duplicates} duplicates)`);
