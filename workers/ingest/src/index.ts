@@ -17,7 +17,7 @@
 import { readSheet } from 'read-excel-file/universal';
 import { Airports, type AirportRecord } from '../../../src/lib/ingest/airports';
 import type { Pt } from '../../../src/lib/ingest/analyze';
-import { extractDay, partUrl, partUrls } from '../../../src/lib/ingest/archive';
+import { extractDay, partInfo, partUrl, partUrls } from '../../../src/lib/ingest/archive';
 import { dayRecord, scoreFromRecords, type DayRecord } from '../../../src/lib/ingest/dayrecord';
 import { downloadPart135, parsePart135 } from '../../../src/lib/ingest/part135';
 import { addDays } from '../../../src/lib/ingest/tz';
@@ -32,7 +32,8 @@ export interface Env {
 
 export type Msg =
 	| { k: 'plan'; trigger: 'schedule' | 'upload' | 'manual' }
-	| { k: 'day'; run: number; day: string; since: string | null; snapshot: string }
+	/** part/parts/size: one archive part of the day (messages without them cover the whole day) */
+	| { k: 'day'; run: number; day: string; since: string | null; snapshot: string; part?: number; parts?: number; size?: number }
 	| { k: 'score'; run: number; offset: number; limit: number; hexes?: string[]; interim?: boolean }
 	| { k: 'part135' };
 
@@ -132,22 +133,40 @@ async function plan(env: Env, trigger: string) {
 		db.prepare('DELETE FROM ingest_days WHERE day < ?').bind(start)
 	]);
 
+	// one job per archive part (2 GB each) keeps every job well inside the 15-minute limit
+	const partJobs: Extract<Msg, { k: 'day' }>[] = [];
+	const partCount = new Map<string, number>();
+	const dayJobs = jobs as Extract<Msg, { k: 'day' }>[];
+	for (let i = 0; i < dayJobs.length; i += 10) {
+		const infos = await Promise.all(dayJobs.slice(i, i + 10).map((j) => partInfo(j.day)));
+		infos.forEach((parts, k) => {
+			const j = dayJobs[i + k];
+			// a day that is not published is still queued as one job; it fails and is retried next run
+			const n = Math.max(parts.length, 1);
+			partCount.set(j.day, n);
+			for (let p = 0; p < n; p++) partJobs.push({ ...j, part: p, parts: n, size: parts[p]?.size ?? 0 });
+		});
+	}
+
 	const run = await db
 		.prepare(
 			`INSERT INTO refresh_runs (trigger, status, started_at, window_start, window_end, days_total, days_pending)
 			 VALUES (?, 'downloading', ?, ?, ?, ?, ?) RETURNING id`
 		)
-		.bind(trigger, snapshot, start, end, jobs.length, jobs.length)
+		.bind(trigger, snapshot, start, end, dayJobs.length, dayJobs.length)
 		.first<{ id: number }>();
 	const runId = run!.id;
-	if (!jobs.length) return startScoring(env, runId);
-	for (let i = 0; i < jobs.length; i += 100)
-		await env.QUEUE.sendBatch(jobs.slice(i, i + 100).map((j) => ({ body: { ...(j as Extract<Msg, { k: 'day' }>), run: runId } })));
+	if (!dayJobs.length) return startScoring(env, runId);
+	await db.batch(
+		[...partCount].map(([day, n]) => db.prepare('INSERT OR REPLACE INTO day_parts (run, day, pending) VALUES (?, ?, ?)').bind(runId, day, n))
+	);
+	for (let i = 0; i < partJobs.length; i += 100)
+		await env.QUEUE.sendBatch(partJobs.slice(i, i + 100).map((j) => ({ body: { ...j, run: runId } })));
 }
 
 // ---------------------------------------------------------------- day
 
-async function processDay(env: Env, m: Extract<Msg, { k: 'day' }>, attempt = 1) {
+async function processDay(env: Env, m: Extract<Msg, { k: 'day' }>, attempt = 1): Promise<{ seen: number; kept: number }> {
 	const db = env.DB;
 	const q = m.since
 		? db.prepare('SELECT hex FROM candidates WHERE added_at > ? AND added_at <= ?').bind(m.since, m.snapshot)
@@ -156,8 +175,11 @@ async function processDay(env: Env, m: Extract<Msg, { k: 'day' }>, attempt = 1) 
 	let seen = 0,
 		kept = 0;
 	if (hexes.size) {
-		const urls = await partUrls(m.day);
-		if (!urls.length) throw new Error(`archive for ${m.day} not found`);
+		const urls =
+			m.part !== undefined && m.parts
+				? Array.from({ length: m.parts }, (_, i) => partUrl(m.day, String.fromCharCode(97 + Math.floor(i / 26), 97 + (i % 26))))
+				: await partUrls(m.day);
+		if (!urls.length || (m.part !== undefined && !m.size)) throw new Error(`archive for ${m.day} not found`);
 		const s = dayStart(m.day);
 		const rows: Record<string, unknown>[] = [];
 		const t0 = Date.now();
@@ -175,21 +197,45 @@ async function processDay(env: Env, m: Extract<Msg, { k: 'day' }>, attempt = 1) 
 			nextMark += 500e6;
 			const secs = (Date.now() - t0) / 1000;
 			marks.push(jobLog(env, m, attempt, 'progress', secs, `${(total / 1e9).toFixed(1)} GB, ${(total / 1e6 / secs).toFixed(1)} MB/s, ${rows.length} aircraft`));
-		});
+		}, m.part !== undefined ? { index: m.part, size: m.size! } : undefined);
 		await Promise.all(marks);
-		if (!res.seen) throw new Error(`archive for ${m.day} had no traces`);
+		if (!res.seen && m.part === undefined) throw new Error(`archive for ${m.day} had no traces`);
 		seen = res.seen;
 		kept = rows.length;
 		const stmts = upsertStmts(db, 'day_items', ['hex', 'day', 'data'], rows);
 		for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50));
 	}
-	await db
+	return { seen, kept };
+}
+
+async function markDayProcessed(env: Env, m: Extract<Msg, { k: 'day' }>, seen: number, kept: number) {
+	await env.DB
 		.prepare(
 			`INSERT INTO ingest_days (day, processed_at, traces_seen, kept) VALUES (?1, ?2, ?3, ?4)
 			 ON CONFLICT (day) DO UPDATE SET processed_at = ?2, traces_seen = MAX(traces_seen, ?3), kept = kept + ?4`
 		)
 		.bind(m.day, m.snapshot, seen, kept)
 		.run();
+}
+
+/** A part (or whole-day) job ended; when the day's last part ends, record the day and count it. */
+async function dayJobEnded(env: Env, m: Extract<Msg, { k: 'day' }>, failed: boolean, seen = 0, kept = 0) {
+	if (m.part === undefined) {
+		if (!failed) await markDayProcessed(env, m, seen, kept);
+		return dayFinished(env, m.run, failed);
+	}
+	const r = await env.DB
+		.prepare(
+			`UPDATE day_parts SET pending = pending - 1, failed = failed + ?, seen = seen + ?, kept = kept + ?
+			 WHERE run = ? AND day = ? RETURNING pending, failed, seen, kept`
+		)
+		.bind(failed ? 1 : 0, seen, kept, m.run, m.day)
+		.first<{ pending: number; failed: number; seen: number; kept: number }>();
+	if (!r || r.pending > 0) return;
+	// a day with a failed part stays unprocessed, so the next run downloads it again
+	if (!r.failed) await markDayProcessed(env, m, r.seen, r.kept);
+	await env.DB.prepare('DELETE FROM day_parts WHERE run = ? AND day = ?').bind(m.run, m.day).run();
+	await dayFinished(env, m.run, r.failed > 0);
 }
 
 async function dayFinished(env: Env, run: number, failed: boolean) {
@@ -394,7 +440,7 @@ async function jobLog(env: Env, m: Msg, attempt: number, event: 'start' | 'done'
 			logReady = true;
 		}
 		const run = 'run' in m ? m.run : null;
-		const day = m.k === 'day' ? m.day : m.k === 'score' ? String(m.offset) : null;
+		const day = m.k === 'day' ? (m.part !== undefined ? `${m.day}#${m.part + 1}/${m.parts}` : m.day) : m.k === 'score' ? String(m.offset) : null;
 		await env.DB.prepare('INSERT INTO refresh_log (ts, run, kind, day, attempt, event, secs, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
 			.bind(now(), run, m.k, day, attempt, event, secs ?? null, detail.slice(0, 500))
 			.run();
@@ -420,8 +466,8 @@ export default {
 			try {
 				if (m.k === 'plan') await plan(env, m.trigger);
 				else if (m.k === 'day') {
-					await processDay(env, m, msg.attempts);
-					await dayFinished(env, m.run, false);
+					const { seen, kept } = await processDay(env, m, msg.attempts);
+					await dayJobEnded(env, m, false, seen, kept);
 				} else if (m.k === 'score') {
 					await scoreSlice(env, m);
 					if (!m.interim) await sliceFinished(env, m.run);
@@ -434,7 +480,7 @@ export default {
 				if (msg.attempts < MAX_ATTEMPTS) msg.retry({ delaySeconds: 60 * msg.attempts });
 				else {
 					// give up on this job but keep the run moving
-					if (m.k === 'day') await dayFinished(env, m.run, true);
+					if (m.k === 'day') await dayJobEnded(env, m, true);
 					else if (m.k === 'score' && !m.interim) await sliceFinished(env, m.run);
 					msg.ack();
 				}

@@ -17,17 +17,28 @@ export function partUrl(day: string, part: string): string {
 	return BASE.replace('{year}', day.slice(0, 4)).replaceAll('{tag}', tag).replace('{part}', part);
 }
 
-/** URLs of all archive parts for a day; [] if the day is not published (yet). */
-export async function partUrls(day: string): Promise<string[]> {
-	const urls: string[] = [];
+export interface PartInfo {
+	url: string;
+	size: number;
+}
+
+/** All archive parts for a day with their sizes; [] if the day is not published (yet). */
+export async function partInfo(day: string): Promise<PartInfo[]> {
+	const parts: PartInfo[] = [];
 	for (let i = 0; i < 26 * 26; i++) {
 		const url = partUrl(day, String.fromCharCode(97 + Math.floor(i / 26), 97 + (i % 26)));
 		const res = await fetch(url, { headers: { Range: 'bytes=0-0' } });
 		await res.body?.cancel();
-		if (res.status === 200 || res.status === 206) urls.push(url);
-		else break;
+		if (res.status !== 200 && res.status !== 206) break;
+		const total = /\/(\d+)$/.exec(res.headers.get('content-range') ?? '')?.[1] ?? res.headers.get('content-length') ?? '0';
+		parts.push({ url, size: Number(total) });
 	}
-	return urls;
+	return parts;
+}
+
+/** URLs of all archive parts for a day; [] if the day is not published (yet). */
+export async function partUrls(day: string): Promise<string[]> {
+	return (await partInfo(day)).map((p) => p.url);
 }
 
 async function* concatParts(urls: string[], onBytes?: (total: number) => void): AsyncGenerator<Uint8Array> {
@@ -36,12 +47,17 @@ async function* concatParts(urls: string[], onBytes?: (total: number) => void): 
 		const res = await fetch(url);
 		if (!res.ok || !res.body) throw new Error(`${url}: HTTP ${res.status}`);
 		const reader = res.body.getReader();
-		for (;;) {
-			const { value, done } = await reader.read();
-			if (done) break;
-			total += value.length;
-			onBytes?.(total);
-			yield value;
+		try {
+			for (;;) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				total += value.length;
+				onBytes?.(total);
+				yield value;
+			}
+		} finally {
+			// the consumer may stop early (part-wise reading): close the download
+			await reader.cancel().catch(() => {});
 		}
 	}
 }
@@ -119,7 +135,9 @@ export async function extractDay(
 	urls: string[],
 	hexes: Set<string>,
 	onTrace: (hex: string, trace: CompactTrace) => void | Promise<void>,
-	onBytes?: (total: number) => void
+	onBytes?: (total: number) => void,
+	/** read only the entries whose header lies in this part (urls[part]); later parts are read only to finish the last entry */
+	part?: { index: number; size: number }
 ): Promise<{ seen: number; kept: number }> {
 	let seen = 0,
 		kept = 0;
@@ -130,7 +148,9 @@ export async function extractDay(
 		return hexes.has(m[1]);
 	};
 	const dec = new TextDecoder();
-	for await (const entry of tarEntries(concatParts(urls, onBytes), want)) {
+	const src = part ? concatParts(urls.slice(part.index), onBytes) : concatParts(urls, onBytes);
+	const opts = part ? { resync: part.index > 0, stopAt: part.size } : {};
+	for await (const entry of tarEntries(src, want, opts)) {
 		const hex = TRACE_RE.exec(entry.name)![1];
 		const c = compact(JSON.parse(dec.decode(await gunzip(entry.data))) as RawTrace);
 		if (!c.pts.length) continue;
